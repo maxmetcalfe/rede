@@ -4,21 +4,34 @@ This project extends the Cloudflare Durable Object starter so that every bot des
 
 ## Project Structure
 
-- `src/index.ts` – Worker entry point and the `BotDurableObject` class.
+- `src/index.ts` – Worker entry point and HTTP routing for bot management.
+- `src/bot.ts` – Durable Object implementation plus registry helpers.
 - `bots.json` – Source of truth for bot properties (`name`, `llmApiKey`, `prompt`, `createdAt`).
 - `scripts/deploy-bots.mjs` – Helper that validates the bot list and runs `wrangler deploy` with the correct environment variables.
 
 ## Declaring Bots
 
-Update `bots.json` with any bots you want to manage:
+Update `bots.json` with any bots you want to manage. The repository ships with three example bots (`A`, `B`, and `C`) to illustrate the format:
 
 ```json
 [
   {
-    "name": "test-bot",
-    "llmApiKey": "replace-with-real-api-key",
-    "prompt": "You are a friendly assistant that answers questions about this project.",
+    "name": "A",
+    "llmApiKey": "replace-with-real-api-key-a",
+    "prompt": "You summarize repository changes in one sentence.",
     "createdAt": "2024-01-01T00:00:00.000Z"
+  },
+  {
+    "name": "B",
+    "llmApiKey": "replace-with-real-api-key-b",
+    "prompt": "You focus on deployment status and report blockers.",
+    "createdAt": "2024-01-02T00:00:00.000Z"
+  },
+  {
+    "name": "C",
+    "llmApiKey": "replace-with-real-api-key-c",
+    "prompt": "You give architecture-level advice for this project.",
+    "createdAt": "2024-01-03T00:00:00.000Z"
   }
 ]
 ```
@@ -37,6 +50,17 @@ Useful endpoints while running locally (`http://localhost:8787`):
 - `GET /bots` – Lists all configured bots (LLM keys are hidden).
 - `POST /bots/:name/deploy` – Persists the bot configuration into its Durable Object.
 - `GET /bots/:name` – Returns the bot profile, automatically deploying it if necessary.
+- `GET /bots/:name/health` – Runs a Durable Object healthcheck that must return `200 OK`.
+
+### Durable Object local testing
+
+Use Wrangler's local mode to spin up the Worker with real Durable Object RPC support and persisted state in `.wrangler/local-state`:
+
+```bash
+npm run deploy:local
+```
+
+This is helpful when you need to exercise Durable Object RPC calls (like `deploy`, `getProfile`, or any new methods) without deploying to Cloudflare.
 
 ## Deploying Bots to Cloudflare
 
@@ -45,17 +69,17 @@ All deployments go through the helper script, which keeps `BOT_DEPLOY_TARGETS` i
 ### Deployment Quickstart
 
 1. Run `npm install` (first time only).
-2. Edit `bots.json` and customize the provided `test-bot` entry (replace the placeholder API key and prompt).
+2. Edit `bots.json` and customize the provided sample entries (replace the placeholder API keys and prompts).
 3. Deploy just that bot:
    ```bash
-   npm run deploy:bots -- --bot test-bot
+   npm run deploy:bots -- --bot A --url https://<your-worker-subdomain>
    ```
-   The script validates that `test-bot` exists, then invokes `wrangler deploy --var BOT_DEPLOY_TARGETS=["test-bot"]` so only that bot is active.
+   The script validates that `A` exists, deploys the Worker with `BOT_DEPLOY_TARGETS=["A"]`, issues a `POST /bots/A/deploy` call to initialize the Durable Object, and then polls `https://<your-worker-subdomain>/bots/A/health` until it receives HTTP 200 before finishing.
 4. Hit your Worker URL:
    ```bash
-   curl https://<your-worker-subdomain>/bots/test-bot
+   curl https://<your-worker-subdomain>/bots/A
    ```
-   The response shows the stored metadata (with the API key hidden). Use `POST /bots/test-bot/deploy` later if you update `bots.json` and need to redeploy the Durable Object state.
+   The response shows the stored metadata (with the API key hidden). Use `POST /bots/A/deploy` later if you update `bots.json` and need to redeploy the Durable Object state.
 
 ### Deploy every bot in `bots.json`
 
@@ -65,18 +89,18 @@ npm run deploy:bots
 
 ### Deploy a single bot
 
-Pass the bot name with `--bot`:
+Pass the bot name with `--bot`, and provide the Worker base URL (or set `BOT_HEALTHCHECK_URL`) so the script can run healthchecks:
 
 ```bash
-npm run deploy:bots -- --bot test-bot
+BOT_HEALTHCHECK_URL=https://<your-worker-subdomain> npm run deploy:bots -- --bot B
 ```
 
-The script validates that `test-bot` exists in `bots.json`, then runs `wrangler deploy --var BOT_DEPLOY_TARGETS=["test-bot"]`. Only bots included in that list will respond to API calls until you redeploy with a different selection.
+Only bots included in the selection respond to API calls until you redeploy with a different list.
 
 ### Deploy multiple specific bots
 
 ```bash
-npm run deploy:bots -- --bot test-bot --bot support-bot
+npm run deploy:bots -- --bot A --bot B --url https://<your-worker-subdomain>
 ```
 
 ## Killing All Bots
@@ -99,4 +123,3 @@ Because this is destructive, make sure you've backed up any data you care about 
 1. Run `wrangler tail` (optional) to watch logs.
 2. Use `curl` (or any HTTP client) against your Worker URL to hit the same `/bots` endpoints shown above.
 3. Each Durable Object stores `name`, `llmApiKey`, `prompt`, and `createdAt` so you can later wire them into your LLM execution pipeline.
-

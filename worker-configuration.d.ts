@@ -8400,7 +8400,7 @@ declare namespace Cloudflare {
     //
     //       // Declares which of the main module's exports are configured with durable storage, and
     //       // thus should behave as Durable Object namsepace bindings.
-    //       durableNamespaces: "MyDurableObject" | "AnotherDurableObject";
+    //       durableNamespaces: "BotDurableObject" | "AnotherDurableObject";
     //     }
     //
     // You can use `wrangler types` to generate `GlobalProps` automatically.

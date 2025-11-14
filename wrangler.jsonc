@@ -6,12 +6,6 @@
   "migrations": [
     {
       "new_sqlite_classes": [
-        "MyDurableObject"
-      ],
-      "tag": "v1"
-    },
-    {
-      "new_sqlite_classes": [
         "BotDurableObject"
       ],
       "tag": "bots-v1"

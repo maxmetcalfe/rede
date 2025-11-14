@@ -4,6 +4,7 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"deploy:local": "wrangler dev --local --persist-to=.wrangler/local-state",
 		"deploy:bots": "node ./scripts/deploy-bots.mjs",
 		"kill:bots": "node ./scripts/kill-bots.mjs",
 		"dev": "wrangler dev",

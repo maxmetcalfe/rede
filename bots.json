@@ -1,8 +1,20 @@
 [
 	{
-		"name": "test-bot",
-		"llmApiKey": "replace-with-real-api-key",
-		"prompt": "You are a friendly assistant that answers questions about this project.",
+		"name": "A",
+		"llmApiKey": "replace-with-real-api-key-a",
+		"prompt": "You summarize repository changes in one sentence.",
 		"createdAt": "2024-01-01T00:00:00.000Z"
+	},
+	{
+		"name": "B",
+		"llmApiKey": "replace-with-real-api-key-b",
+		"prompt": "You focus on deployment status and report blockers.",
+		"createdAt": "2024-01-02T00:00:00.000Z"
+	},
+	{
+		"name": "C",
+		"llmApiKey": "replace-with-real-api-key-c",
+		"prompt": "You give architecture-level advice for this project.",
+		"createdAt": "2024-01-03T00:00:00.000Z"
 	}
 ]
