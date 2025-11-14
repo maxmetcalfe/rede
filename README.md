@@ -48,9 +48,15 @@ npm run dev
 Useful endpoints while running locally (`http://localhost:8787`):
 
 - `GET /bots` – Lists all configured bots (LLM keys are hidden).
-- `POST /bots/:name/deploy` – Persists the bot configuration into its Durable Object.
+- `POST /bots/:name/deploy` – Persists the bot configuration into its Durable Object, shares the full bot roster (names + URLs), and seeds the bot's message history with its prompt on first deployment.
 - `GET /bots/:name` – Returns the bot profile, automatically deploying it if necessary.
-- `GET /bots/:name/health` – Runs a Durable Object healthcheck that must return `200 OK`.
+- `GET /bots/:name/health` – Runs a Durable Object healthcheck that returns the number of `knownBots`.
+
+### Bot metadata & message history
+
+Every deployment call passes the list of all active bots and their canonical URLs (for example, `https://<worker>/bots/A`). Each Durable Object stores this peer list so bots know how to reach each other, and the healthcheck response surfaces the current `knownBots` count.
+
+On first deployment the Durable Object also seeds its message history with the prompt from `bots.json`, stored as a `{ timestamp, content, botId }` entry. Future deployments preserve the existing messages so each bot keeps its conversation log.
 
 ### Durable Object local testing
 
@@ -60,7 +66,7 @@ Use Wrangler's local mode to spin up the Worker with real Durable Object RPC sup
 npm run deploy:local
 ```
 
-This is helpful when you need to exercise Durable Object RPC calls (like `deploy`, `getProfile`, or any new methods) without deploying to Cloudflare.
+This is helpful when you need to exercise Durable Object RPC calls (like `deploy`, `getProfile`, `healthcheck`, or any new methods) without deploying to Cloudflare.
 
 ## Deploying Bots to Cloudflare
 
@@ -74,7 +80,7 @@ All deployments go through the helper script, which keeps `BOT_DEPLOY_TARGETS` i
    ```bash
    npm run deploy:bots -- --bot A --url https://<your-worker-subdomain>
    ```
-   The script validates that `A` exists, deploys the Worker with `BOT_DEPLOY_TARGETS=["A"]`, issues a `POST /bots/A/deploy` call to initialize the Durable Object, and then polls `https://<your-worker-subdomain>/bots/A/health` until it receives HTTP 200 before finishing.
+   The script validates that `A` exists, deploys the Worker with `BOT_DEPLOY_TARGETS=["A"]`, issues a `POST /bots/A/deploy` (which shares the full bot roster and URLs), and then polls `https://<your-worker-subdomain>/bots/A/health` until it receives HTTP 200 with the expected `knownBots` count.
 4. Hit your Worker URL:
    ```bash
    curl https://<your-worker-subdomain>/bots/A
@@ -122,4 +128,4 @@ Because this is destructive, make sure you've backed up any data you care about 
 
 1. Run `wrangler tail` (optional) to watch logs.
 2. Use `curl` (or any HTTP client) against your Worker URL to hit the same `/bots` endpoints shown above.
-3. Each Durable Object stores `name`, `llmApiKey`, `prompt`, and `createdAt` so you can later wire them into your LLM execution pipeline.
+3. Each Durable Object stores `name`, `llmApiKey`, `prompt`, `createdAt`, the latest `knownBots` list, and a message history (seeded with the prompt on first deploy) so you can later wire them into your LLM execution pipeline.

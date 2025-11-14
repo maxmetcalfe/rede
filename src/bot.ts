@@ -8,7 +8,27 @@ export type BotDefinition = {
 	createdAt?: string;
 };
 
-export type StoredBot = BotDefinition & { createdAt: string };
+export type BotPeer = {
+	name: string;
+	botUrl: string;
+};
+
+export type BotMessage = {
+	timestamp: string;
+	content: string;
+	botId: string;
+};
+
+export type StoredBot = BotDefinition & {
+	createdAt: string;
+	knownBots: BotPeer[];
+	messages: BotMessage[];
+};
+
+export type BotDeploymentPayload = {
+	bot: BotDefinition;
+	peers: BotPeer[];
+};
 
 const BOT_DEFINITIONS: readonly BotDefinition[] = botDefinitions;
 export const BOT_STORAGE_KEY = "bot";
@@ -81,13 +101,25 @@ export class BotDurableObject extends DurableObject<Env> {
 		return this.bot;
 	}
 
-	async deploy(botDefinition: BotDefinition): Promise<StoredBot> {
+	async deploy(payload: BotDeploymentPayload): Promise<StoredBot> {
+		const { bot: botDefinition, peers } = payload;
 		const persisted = await this.loadBot();
 		const createdAt =
 			persisted?.createdAt ??
 			botDefinition.createdAt ??
 			new Date().toISOString();
-		const bot: StoredBot = { ...botDefinition, createdAt };
+		const existingMessages =
+			Array.isArray(persisted?.messages) && persisted.messages.length > 0
+				? persisted.messages
+				: [
+						this.buildInitialMessage(botDefinition, createdAt),
+					];
+		const bot: StoredBot = {
+			...botDefinition,
+			createdAt,
+			knownBots: peers,
+			messages: existingMessages,
+		};
 		await this.ctx.storage.put(BOT_STORAGE_KEY, bot);
 		this.bot = bot;
 		return bot;
@@ -98,14 +130,44 @@ export class BotDurableObject extends DurableObject<Env> {
 		if (!bot) {
 			throw new Error("Bot has not been deployed yet.");
 		}
+		let updated = false;
+		const knownBots = bot.knownBots ?? [];
+		if (!bot.knownBots) {
+			updated = true;
+		}
+		const messages =
+			Array.isArray(bot.messages) && bot.messages.length > 0
+				? bot.messages
+				: [this.buildInitialMessage(bot, bot.createdAt)];
+		if (!bot.messages || bot.messages.length === 0) {
+			updated = true;
+		}
+		if (updated) {
+			const normalized: StoredBot = {
+				...bot,
+				knownBots,
+				messages,
+			};
+			await this.ctx.storage.put(BOT_STORAGE_KEY, normalized);
+			this.bot = normalized;
+			return normalized;
+		}
 		return bot;
 	}
 
-	async healthcheck(): Promise<{ status: "ok" }> {
-		await this.getProfile();
+	async healthcheck(): Promise<{
+		status: "ok";
+		knownBots: number;
+		messages: BotMessage[];
+	}> {
+		const bot = await this.getProfile();
 		// Storage SQL call ensures SQLite backend is reachable.
 		await this.ctx.storage.sql.exec("SELECT 1 as ok");
-		return { status: "ok" };
+		return {
+			status: "ok",
+			knownBots: bot.knownBots?.length ?? 0,
+			messages: bot.messages,
+		};
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -120,5 +182,16 @@ export class BotDurableObject extends DurableObject<Env> {
 		} catch {
 			return new Response("Bot is not deployed.", { status: 404 });
 		}
+	}
+
+	private buildInitialMessage(
+		botDefinition: BotDefinition,
+		timestamp: string,
+	): BotMessage {
+		return {
+			timestamp,
+			content: botDefinition.prompt,
+			botId: botDefinition.name,
+		};
 	}
 }

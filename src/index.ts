@@ -3,6 +3,7 @@ import {
 	BotDurableObject,
 	BotRegistry,
 	BotDefinition,
+	BotDeploymentPayload,
 	jsonResponse,
 } from "./bot";
 
@@ -60,17 +61,19 @@ export default {
 		}
 
 		const definitionOrResponse = ensureBotDefinition(maybeName, registry);
-		if (definitionOrResponse instanceof Response) {
+	if (definitionOrResponse instanceof Response) {
 			return definitionOrResponse;
 		}
 		const targetBot = definitionOrResponse;
 		const stub = env.BOTS.getByName(targetBot.name);
+		const buildPayload = () =>
+			buildDeploymentPayload(targetBot, registry, url.origin);
 
 		if (maybeAction === "deploy") {
 			if (request.method !== "POST") {
 				return new Response("Method Not Allowed", { status: 405 });
 			}
-			const bot = await stub.deploy(targetBot);
+			const bot = await stub.deploy(buildPayload());
 			return jsonResponse(
 				{
 					message: `Bot "${targetBot.name}" deployed.`,
@@ -85,7 +88,12 @@ export default {
 				return new Response("Method Not Allowed", { status: 405 });
 			}
 			try {
-				const status = await stub.healthcheck();
+				let status = await stub.healthcheck();
+				const expectedBots = buildPayload().peers.length;
+				if (status.knownBots !== expectedBots) {
+					await stub.deploy(buildPayload());
+					status = await stub.healthcheck();
+				}
 				return jsonResponse({
 					message: `Bot "${targetBot.name}" responded to healthcheck.`,
 					health: status,
@@ -110,7 +118,7 @@ export default {
 			const profile = await stub.getProfile();
 			return jsonResponse(registry.sanitize(profile));
 		} catch {
-			const deployed = await stub.deploy(targetBot);
+			const deployed = await stub.deploy(buildPayload());
 			return jsonResponse(
 				{
 					message: `Bot "${targetBot.name}" was not deployed and has been initialized now.`,
@@ -121,3 +129,18 @@ export default {
 		}
 	},
 } satisfies ExportedHandler<Env>;
+
+function buildDeploymentPayload(
+	targetBot: BotDefinition,
+	registry: BotRegistry,
+	origin: string,
+): BotDeploymentPayload {
+	const peers = registry.getActiveBots().map((bot) => ({
+		name: bot.name,
+		botUrl: new URL(`/bots/${encodeURIComponent(bot.name)}`, origin).toString(),
+	}));
+	return {
+		bot: targetBot,
+		peers,
+	};
+}
