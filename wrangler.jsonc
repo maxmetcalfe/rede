@@ -1,0 +1,70 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rede",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-11-11",
+  "migrations": [
+    {
+      "new_sqlite_classes": [
+        "MyDurableObject"
+      ],
+      "tag": "v1"
+    },
+    {
+      "new_sqlite_classes": [
+        "BotDurableObject"
+      ],
+      "tag": "bots-v1"
+    },
+    {
+      "deleted_classes": [
+        "BotDurableObject"
+      ],
+      "tag": "bots-kill-20251114141353"
+    },
+    {
+      "new_sqlite_classes": [
+        "BotDurableObject"
+      ],
+      "tag": "bots-reset-20251114141353"
+    },
+    {
+      "deleted_classes": [
+        "BotDurableObject"
+      ],
+      "tag": "bots-kill-20251114141627"
+    },
+    {
+      "new_sqlite_classes": [
+        "BotDurableObject"
+      ],
+      "tag": "bots-reset-20251114141627"
+    },
+    {
+      "tag": "bots-kill-20251114142234",
+      "deleted_classes": [
+        "BotDurableObject"
+      ]
+    },
+    {
+      "tag": "bots-reset-20251114142250",
+      "new_sqlite_classes": [
+        "BotDurableObject"
+      ]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "BotDurableObject",
+        "name": "BOTS"
+      }
+    ]
+  },
+  "vars": {
+    "BOT_DEPLOY_TARGETS": "[]"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

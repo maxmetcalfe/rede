@@ -1,0 +1,8 @@
+[
+	{
+		"name": "test-bot",
+		"llmApiKey": "replace-with-real-api-key",
+		"prompt": "You are a friendly assistant that answers questions about this project.",
+		"createdAt": "2024-01-01T00:00:00.000Z"
+	}
+]

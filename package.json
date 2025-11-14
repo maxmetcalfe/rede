@@ -1,0 +1,17 @@
+{
+	"name": "rede",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"deploy:bots": "node ./scripts/deploy-bots.mjs",
+		"kill:bots": "node ./scripts/kill-bots.mjs",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.2",
+		"wrangler": "^4.48.0"
+	}
+}
