@@ -49,14 +49,28 @@ Useful endpoints while running locally (`http://localhost:8787`):
 
 - `GET /bots` – Lists all configured bots (LLM keys are hidden).
 - `POST /bots/:name/deploy` – Persists the bot configuration into its Durable Object, shares the full bot roster (names + URLs), and seeds the bot's message history with its prompt on first deployment.
+- `POST /bots/:name/message` – Sends a JSON `{ "to": "<recipient>", "content": "<text>" }` payload so one bot can message another.
 - `GET /bots/:name` – Returns the bot profile, automatically deploying it if necessary.
-- `GET /bots/:name/health` – Runs a Durable Object healthcheck that returns the number of `knownBots`.
+- `GET /bots/:name/health` – Runs a Durable Object healthcheck that returns the number of `knownBots` plus the bot's message history.
 
 ### Bot metadata & message history
 
-Every deployment call passes the list of all active bots and their canonical URLs (for example, `https://<worker>/bots/A`). Each Durable Object stores this peer list so bots know how to reach each other, and the healthcheck response surfaces the current `knownBots` count.
+Every deployment call passes the list of all active bots and their canonical URLs (for example, `https://<worker>/bots/A`). Each Durable Object stores this peer list so bots know how to reach each other, and the healthcheck response surfaces the current `knownBots` count along with the latest message history.
 
-On first deployment the Durable Object also seeds its message history with the prompt from `bots.json`, stored as a `{ timestamp, content, botId }` entry. Future deployments preserve the existing messages so each bot keeps its conversation log.
+On first deployment the Durable Object also seeds its message history with the prompt from `bots.json`, stored as a `{ timestamp, content, botId }` entry. Each time a bot is deployed it also announces its presence to every other bot by sending an `"I'm here"` message that shows up in the recipient's history—plus it logs the broadcast locally so you can see that it started talking. Future deployments preserve existing messages so each bot keeps its conversation log.
+
+### Bot-to-bot messaging
+
+Use `POST /bots/:name/message` to send a payload like:
+
+```json
+{
+  "to": "B",
+  "content": "Reminder: deploy is live."
+}
+```
+
+The worker ensures both bots are deployed, then appends the message to the recipient's history. This API intentionally keeps the shape minimal so we can extend bot actions later.
 
 ### Durable Object local testing
 

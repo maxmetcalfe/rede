@@ -19,6 +19,12 @@ export type BotMessage = {
 	botId: string;
 };
 
+export type BotMessageInput = {
+	botId: string;
+	content: string;
+	timestamp?: string;
+};
+
 export type StoredBot = BotDefinition & {
 	createdAt: string;
 	knownBots: BotPeer[];
@@ -193,5 +199,25 @@ export class BotDurableObject extends DurableObject<Env> {
 			content: botDefinition.prompt,
 			botId: botDefinition.name,
 		};
+	}
+
+	private async appendMessage(message: BotMessageInput): Promise<StoredBot> {
+		const bot = await this.getProfile();
+		const entry: BotMessage = {
+			timestamp: message.timestamp ?? new Date().toISOString(),
+			content: message.content,
+			botId: message.botId,
+		};
+		const updated: StoredBot = {
+			...bot,
+			messages: [...bot.messages, entry],
+		};
+		await this.ctx.storage.put(BOT_STORAGE_KEY, updated);
+		this.bot = updated;
+		return updated;
+	}
+
+	async receiveMessage(message: BotMessageInput): Promise<StoredBot> {
+		return this.appendMessage(message);
 	}
 }
