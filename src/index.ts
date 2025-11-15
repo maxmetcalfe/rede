@@ -10,6 +10,7 @@ import {
 	StoredBot,
 	jsonResponse,
 } from "./bot";
+import { getEventLog, logEvent } from "./logger";
 
 export { BotDurableObject };
 
@@ -51,18 +52,32 @@ export default {
 			return new Response("Not Found", { status: 404 });
 		}
 
-		if (!maybeName) {
-			if (request.method !== "GET") {
-				return new Response("Method Not Allowed", { status: 405 });
-			}
-			const bots = registry.getActiveBots().map((bot) =>
-				registry.sanitize({
-					...bot,
-					createdAt: bot.createdAt ?? "not-set",
-				}),
-			);
-			return jsonResponse(bots);
+	if (!maybeName) {
+		if (request.method !== "GET") {
+			return new Response("Method Not Allowed", { status: 405 });
 		}
+		const bots = registry.getActiveBots().map((bot) =>
+			registry.sanitize({
+				...bot,
+				createdAt: bot.createdAt ?? "not-set",
+			}),
+		);
+		return jsonResponse(bots);
+	}
+
+	if (maybeName === "events" && !maybeAction) {
+		if (request.method !== "GET") {
+			return new Response("Method Not Allowed", { status: 405 });
+		}
+		const events = getEventLog();
+		const body = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+		return new Response(body, {
+			headers: {
+				"content-type": "application/x-ndjson",
+				"cache-control": "no-store",
+			},
+		});
+	}
 
 		const definitionOrResponse = ensureBotDefinition(maybeName, registry);
 	if (definitionOrResponse instanceof Response) {
@@ -214,10 +229,12 @@ async function deployBot(
 ): Promise<StoredBot> {
 	const payload = buildDeploymentPayload(targetBot, registry, origin);
 	const deployed = await stub.deploy(payload);
+	await new Promise((resolve) => setTimeout(resolve, 2000));
 	await announcePresence(targetBot, registry, env, origin);
-	console.log(
-		`[bots] ${targetBot.name} started at ${new Date().toISOString()} (known bots: ${payload.peers.length})`,
-	);
+	logEvent("deploy.complete", {
+		bot: targetBot.name,
+		knownBots: payload.peers.length,
+	});
 	return deployed;
 }
 
@@ -244,6 +261,10 @@ async function announcePresence(
 	const peers = registry
 		.getActiveBots()
 		.filter((bot) => bot.name !== targetBot.name);
+	logEvent("announce.start", {
+		bot: targetBot.name,
+		peerCount: peers.length,
+	});
 	await Promise.all(
 		peers.map(async (peer) => {
 			try {
@@ -252,16 +273,22 @@ async function announcePresence(
 					peer,
 					"I'm here",
 					registry,
-					env,
-					origin,
-				);
-			} catch (error) {
-				console.warn(
-					`Failed to announce presence to ${peer.name} on behalf of ${targetBot.name}:`,
-					error,
-				);
-			}
-		}),
+						env,
+						origin,
+					);
+					logEvent("announce.sent", {
+						from: targetBot.name,
+						to: peer.name,
+					});
+				} catch (error) {
+					logEvent("announce.error", {
+						from: targetBot.name,
+						to: peer.name,
+						error:
+							error instanceof Error ? error.message : String(error ?? "unknown error"),
+					});
+				}
+			}),
 	);
 	await sendMessageBetweenBots(
 		targetBot,
@@ -277,10 +304,10 @@ async function sendMessageBetweenBots(
 	from: BotDefinition,
 	to: BotDefinition,
 	content: string,
-	registry: BotRegistry,
-	env: Env,
-	origin: string,
-): Promise<string> {
+		registry: BotRegistry,
+		env: Env,
+		origin: string,
+	): Promise<string> {
 	const senderStub = env.BOTS.getByName(from.name);
 	await ensureBotState(senderStub, from, registry, env, origin);
 	const recipientStub = env.BOTS.getByName(to.name);
@@ -288,6 +315,12 @@ async function sendMessageBetweenBots(
 	const timestamp = new Date().toISOString();
 	await recipientStub.receiveMessage({
 		botId: from.name,
+		content,
+		timestamp,
+	});
+	logEvent("message.send", {
+		from: from.name,
+		to: to.name,
 		content,
 		timestamp,
 	});

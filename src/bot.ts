@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import botDefinitions from "../bots.json";
+import { logEvent } from "./logger";
 
 export type BotDefinition = {
 	name: string;
@@ -128,6 +129,10 @@ export class BotDurableObject extends DurableObject<Env> {
 		};
 		await this.ctx.storage.put(BOT_STORAGE_KEY, bot);
 		this.bot = bot;
+		logEvent("durable.deploy", {
+			bot: botDefinition.name,
+			knownBots: peers.length,
+		});
 		return bot;
 	}
 
@@ -218,6 +223,13 @@ export class BotDurableObject extends DurableObject<Env> {
 	}
 
 	async receiveMessage(message: BotMessageInput): Promise<StoredBot> {
-		return this.appendMessage(message);
+		const updated = await this.appendMessage(message);
+		logEvent("message.receive", {
+			bot: updated.name,
+			from: message.botId,
+			content: message.content,
+			timestamp: message.timestamp ?? updated.messages.at(-1)?.timestamp,
+		});
+		return updated;
 	}
 }

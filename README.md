@@ -52,6 +52,7 @@ Useful endpoints while running locally (`http://localhost:8787`):
 - `POST /bots/:name/message` – Sends a JSON `{ "to": "<recipient>", "content": "<text>" }` payload so one bot can message another.
 - `GET /bots/:name` – Returns the bot profile, automatically deploying it if necessary.
 - `GET /bots/:name/health` – Runs a Durable Object healthcheck that returns the number of `knownBots` plus the bot's message history.
+- `GET /bots/events` – Streams the last ~500 structured log events (NDJSON) across every bot for observability.
 
 ### Bot metadata & message history
 
