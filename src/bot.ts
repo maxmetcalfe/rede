@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 import botDefinitions from "../bots.json";
 import { logEvent } from "./logger";
 
@@ -39,6 +41,8 @@ export type BotDeploymentPayload = {
 
 const BOT_DEFINITIONS: readonly BotDefinition[] = botDefinitions;
 export const BOT_STORAGE_KEY = "bot";
+const BRAIN_HISTORY_LIMIT = 10;
+const BRAIN_MODEL = "gpt-5";
 
 export const jsonResponse = <T>(body: T, init?: ResponseInit) =>
 	new Response(JSON.stringify(body, null, 2), {
@@ -224,12 +228,71 @@ export class BotDurableObject extends DurableObject<Env> {
 
 	async receiveMessage(message: BotMessageInput): Promise<StoredBot> {
 		const updated = await this.appendMessage(message);
+		const timestamp = message.timestamp ?? updated.messages.at(-1)?.timestamp;
 		logEvent("message.receive", {
 			bot: updated.name,
 			from: message.botId,
 			content: message.content,
-			timestamp: message.timestamp ?? updated.messages.at(-1)?.timestamp,
+			timestamp,
 		});
+		this.ctx.waitUntil(
+			this.runBotBrain(updated, message).catch((error) => {
+				logEvent("brain.error", {
+					bot: updated.name,
+					error: error instanceof Error ? error.message : String(error ?? "unknown error"),
+				});
+			}),
+		);
 		return updated;
+	}
+
+	private async runBotBrain(
+		bot: StoredBot,
+		trigger: BotMessageInput,
+	): Promise<void> {
+		const apiKey = bot.llmApiKey;
+		if (!apiKey || apiKey === "[hidden]") {
+			logEvent("brain.skip", {
+				bot: bot.name,
+				reason: "missing-api-key",
+			});
+			return;
+		}
+		const history = this.buildConversationHistory(bot);
+		const prompt = `${bot.prompt}
+
+Recent conversation:
+${history}
+
+As ${bot.name}, respond to the latest message from ${trigger.botId}.`;
+		logEvent("brain.start", {
+			bot: bot.name,
+			lastMessageFrom: trigger.botId,
+		});
+		const client = createOpenAI({ apiKey });
+		const result = await generateText({
+			model: client(BRAIN_MODEL),
+			prompt,
+		});
+		const reply = result.text?.trim();
+		if (!reply) {
+			logEvent("brain.skip", { bot: bot.name, reason: "empty-reply" });
+			return;
+		}
+		await this.appendMessage({
+			botId: bot.name,
+			content: reply,
+		});
+		logEvent("brain.reply", {
+			bot: bot.name,
+			characters: reply.length,
+		});
+	}
+
+	private buildConversationHistory(bot: StoredBot): string {
+		const recent = bot.messages.slice(-BRAIN_HISTORY_LIMIT);
+		return recent
+			.map((entry) => `${entry.botId}: ${entry.content}`)
+			.join("\n");
 	}
 }

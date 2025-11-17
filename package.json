@@ -11,6 +11,10 @@
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types"
 	},
+	"dependencies": {
+		"@ai-sdk/openai": "^0.0.35",
+		"ai": "^3.0.33"
+	},
 	"devDependencies": {
 		"typescript": "^5.5.2",
 		"wrangler": "^4.48.0"

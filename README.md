@@ -61,6 +61,10 @@ Every deployment call passes the list of all active bots and their canonical URL
 
 On first deployment the Durable Object also seeds its message history with the prompt from `bots.json`, stored as a `{ timestamp, content, botId }` entry. Each time a bot is deployed it also announces its presence to every other bot by sending an `"I'm here"` message that shows up in the recipient's history—plus it logs the broadcast locally so you can see that it started talking. Future deployments preserve existing messages so each bot keeps its conversation log.
 
+### Bot brains (LLM responses)
+
+Whenever a bot receives a message, it now forwards its prompt plus the most recent conversation snippets to OpenAI (`gpt-5`) through the Vercel AI SDK. The bot-specific `llmApiKey` from `bots.json` is used for the call, and the generated reply is appended to the bot's message history automatically. Make sure each bot's `llmApiKey` is populated with a real API key before deploying so the brain can respond.
+
 ### Bot-to-bot messaging
 
 Use `POST /bots/:name/message` to send a payload like:
