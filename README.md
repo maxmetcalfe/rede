@@ -53,6 +53,7 @@ Useful endpoints while running locally (`http://localhost:8787`):
 - `GET /bots/:name` – Returns the bot profile, automatically deploying it if necessary.
 - `GET /bots/:name/health` – Runs a Durable Object healthcheck that returns the number of `knownBots` plus the bot's message history.
 - `GET /bots/events` – Streams the last ~500 structured log events (NDJSON) across every bot for observability.
+- `GET /bots/events/timeline` – Renders the same events as an HTML timeline for quick inspection in a browser.
 
 ### Bot metadata & message history
 
@@ -123,6 +124,10 @@ Only bots included in the selection respond to API calls until you redeploy with
 ```bash
 npm run deploy:bots -- --bot A --bot B --url https://<your-worker-subdomain>
 ```
+
+### Automatic Durable Object deployment
+
+Whenever the Worker receives traffic after a fresh publish, it iterates through every bot in `bots.json` and deploys their Durable Objects automatically. You can still call `POST /bots/:name/deploy` manually (for example, after editing prompts), but the auto-deploy job ensures all bots are initialized as soon as the Worker goes live.
 
 ## Killing All Bots
 

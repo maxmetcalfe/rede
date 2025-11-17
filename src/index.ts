@@ -31,7 +31,7 @@ export default {
 	async fetch(
 		request: Request,
 		env: Env,
-		_ctx: ExecutionContext,
+		ctx: ExecutionContext,
 	): Promise<Response> {
 		const url = new URL(request.url);
 		const [, root = "", maybeName = "", maybeAction = ""] = url.pathname
@@ -40,6 +40,7 @@ export default {
 			.map(decodeURIComponent);
 
 		const registry = new BotRegistry(env);
+		scheduleAutoDeployment(registry, env, url.origin, ctx);
 
 		if (!root || root.length === 0) {
 			return jsonResponse({
@@ -65,11 +66,17 @@ export default {
 		return jsonResponse(bots);
 	}
 
-	if (maybeName === "events" && !maybeAction) {
+	if (maybeName === "events") {
 		if (request.method !== "GET") {
 			return new Response("Method Not Allowed", { status: 405 });
 		}
 		const events = getEventLog();
+		if (maybeAction === "timeline") {
+			return renderTimeline(events);
+		}
+		if (maybeAction && maybeAction.length > 0) {
+			return new Response("Not Found", { status: 404 });
+		}
 		const body = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
 		return new Response(body, {
 			headers: {
@@ -290,24 +297,16 @@ async function announcePresence(
 				}
 			}),
 	);
-	await sendMessageBetweenBots(
-		targetBot,
-		targetBot,
-		"I'm here",
-		registry,
-		env,
-		origin,
-	);
 }
 
 async function sendMessageBetweenBots(
 	from: BotDefinition,
 	to: BotDefinition,
 	content: string,
-		registry: BotRegistry,
-		env: Env,
-		origin: string,
-	): Promise<string> {
+	registry: BotRegistry,
+	env: Env,
+	origin: string,
+): Promise<string> {
 	const senderStub = env.BOTS.getByName(from.name);
 	await ensureBotState(senderStub, from, registry, env, origin);
 	const recipientStub = env.BOTS.getByName(to.name);
@@ -325,4 +324,241 @@ async function sendMessageBetweenBots(
 		timestamp,
 	});
 	return timestamp;
+}
+
+let autoDeployPromise: Promise<void> | undefined;
+
+function scheduleAutoDeployment(
+	registry: BotRegistry,
+	env: Env,
+	origin: string,
+	ctx: ExecutionContext,
+): void {
+	const bots = registry.getActiveBots();
+	if (bots.length === 0) {
+		return;
+	}
+	if (!autoDeployPromise) {
+		autoDeployPromise = autoDeployAllBots(bots, registry, env, origin).catch(
+			(error) => {
+				logEvent("deploy.auto.error", {
+					error: error instanceof Error ? error.message : String(error ?? "unknown error"),
+				});
+				autoDeployPromise = undefined;
+				throw error;
+			},
+		);
+	}
+	ctx.waitUntil(autoDeployPromise.catch(() => {}));
+}
+
+async function autoDeployAllBots(
+	bots: BotDefinition[],
+	registry: BotRegistry,
+	env: Env,
+	origin: string,
+): Promise<void> {
+	logEvent("deploy.auto.start", { bots: bots.map((bot) => bot.name) });
+	const failures: string[] = [];
+	for (const bot of bots) {
+		const stub = env.BOTS.getByName(bot.name);
+		try {
+			await deployBot(stub, bot, registry, env, origin);
+		} catch (error) {
+			failures.push(bot.name);
+			logEvent("deploy.auto.bot_error", {
+				bot: bot.name,
+				error: error instanceof Error ? error.message : String(error ?? "unknown error"),
+			});
+		}
+	}
+	if (failures.length > 0) {
+		logEvent("deploy.auto.complete", {
+			status: "partial",
+			deployed: bots.length - failures.length,
+			failed: failures,
+		});
+		throw new Error(`Failed to auto deploy bots: ${failures.join(", ")}`);
+	}
+	logEvent("deploy.auto.complete", { status: "ok", deployed: bots.length });
+}
+
+function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
+	const items =
+		events.length > 0
+			? events
+					.map((event, index) => {
+						const side = index % 2 === 0 ? "left" : "right";
+						const payloadHtml = event.payload
+							? `<pre>${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre>`
+							: "";
+						return `
+          <li class="event ${side}">
+            <div class="bubble">
+              <div class="meta">
+                <span class="event-type">${escapeHtml(event.event)}</span>
+                <time>${escapeHtml(event.timestamp)}</time>
+              </div>
+              ${payloadHtml}
+            </div>
+            <span class="dot"></span>
+          </li>
+        `;
+					})
+					.join("")
+			: '<li class="empty">No events recorded yet.</li>';
+	const html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bot Timeline</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        background: #0b0c10;
+        color: #f5f5f5;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 1.5rem;
+      }
+      .timeline-wrapper {
+        position: relative;
+        margin-top: 2rem;
+        padding-left: 50%;
+      }
+      .timeline {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        position: relative;
+      }
+      .timeline::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: calc(50% - 2px);
+        width: 4px;
+        height: 100%;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(80, 200, 255, 0.2));
+      }
+      .event {
+        position: relative;
+        margin-bottom: 2rem;
+        width: 50%;
+      }
+      .event.left {
+        left: -50%;
+        padding-right: 2.5rem;
+        text-align: right;
+      }
+      .event.right {
+        padding-left: 2.5rem;
+      }
+      .bubble {
+        display: inline-block;
+        max-width: 100%;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 1rem;
+        border-radius: 1rem;
+        box-shadow: 0 0 20px rgba(0, 0, 0, 0.25);
+      }
+      .dot {
+        position: absolute;
+        top: 1rem;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #50c8ff;
+        box-shadow: 0 0 12px rgba(80, 200, 255, 0.8);
+      }
+      .event.left .dot {
+        right: -8px;
+      }
+      .event.right .dot {
+        left: -8px;
+      }
+      .event-type {
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.8);
+        margin-bottom: 0.5rem;
+      }
+      pre {
+        margin: 0;
+        padding: 0.75rem;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 0.5rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+      }
+      .empty {
+        text-align: center;
+        padding: 2rem;
+        width: 100%;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      a {
+        color: #50c8ff;
+      }
+      @media (max-width: 768px) {
+        .timeline-wrapper {
+          padding-left: 1.5rem;
+        }
+        .timeline::before {
+          left: 1rem;
+        }
+        .event,
+        .event.left,
+        .event.right {
+          width: 100%;
+          left: 0;
+          padding-left: 2rem;
+          padding-right: 0;
+          text-align: left;
+        }
+        .event .dot {
+          left: -0.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bot Timeline</h1>
+    <p>Showing the latest ${events.length} events captured by the Worker. <a href="/bots/events">Download NDJSON</a></p>
+    <div class="timeline-wrapper">
+      <ul class="timeline">
+        ${items}
+      </ul>
+    </div>
+  </body>
+</html>`;
+	return new Response(html, {
+		headers: {
+			"content-type": "text/html; charset=utf-8",
+			"cache-control": "no-store",
+		},
+	});
+}
+
+function escapeHtml(input: string): string {
+	return input
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 }
