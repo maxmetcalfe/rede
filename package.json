@@ -1,22 +1,22 @@
 {
-	"name": "rede",
-	"version": "0.0.0",
-	"private": true,
-	"scripts": {
-		"deploy": "wrangler deploy",
-		"deploy:local": "wrangler dev --local --persist-to=.wrangler/local-state",
-		"deploy:bots": "node ./scripts/deploy-bots.mjs",
-		"kill:bots": "node ./scripts/kill-bots.mjs",
-		"dev": "wrangler dev",
-		"start": "wrangler dev",
-		"cf-typegen": "wrangler types"
-	},
-	"dependencies": {
-		"@ai-sdk/openai": "^0.0.35",
-		"ai": "^3.0.33"
-	},
-	"devDependencies": {
-		"typescript": "^5.5.2",
-		"wrangler": "^4.48.0"
-	}
+  "name": "rede",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "deploy:local": "wrangler dev --local --persist-to=.wrangler/local-state",
+    "deploy:bots": "node ./scripts/deploy-bots.mjs",
+    "kill:bots": "node ./scripts/kill-bots.mjs",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "2.0.74",
+    "ai": "5.0.104"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.2",
+    "wrangler": "^4.48.0"
+  }
 }

@@ -220,6 +220,7 @@ function buildDeploymentPayload(
 	const peers = registry.getActiveBots().map((bot) => ({
 		name: bot.name,
 		botUrl: new URL(`/bots/${encodeURIComponent(bot.name)}`, origin).toString(),
+		prompt: bot.prompt,
 	}));
 	return {
 		bot: targetBot,
@@ -387,26 +388,44 @@ function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
 	const items =
 		events.length > 0
 			? events
-					.map((event, index) => {
-						const side = index % 2 === 0 ? "left" : "right";
-						const payloadHtml = event.payload
-							? `<pre>${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre>`
-							: "";
-						return `
-          <li class="event ${side}">
-            <div class="bubble">
-              <div class="meta">
-                <span class="event-type">${escapeHtml(event.event)}</span>
+					.map((event) => {
+						const botName = extractBotName(event.payload);
+						const accent = colorForEvent(event.event);
+						const botAccent = botName ? colorForBot(botName) : accent;
+						const participants = buildParticipantText(event.payload);
+						const content = extractContent(event.payload);
+						const tooltip = `
+              <div class="tooltip-header">
+                <span class="pill event-pill">${escapeHtml(event.event)}</span>
+                ${
+									botName
+										? `<span class="pill bot-pill">${escapeHtml(botName)}</span>`
+										: ""
+								}
                 <time>${escapeHtml(event.timestamp)}</time>
               </div>
-              ${payloadHtml}
+              ${
+								participants
+									? `<div class="tooltip-participants">${escapeHtml(participants)}</div>`
+									: ""
+							}
+              ${
+								content
+									? `<p class="tooltip-content">${escapeHtml(truncate(content, 200))}</p>`
+									: ""
+							}
+            `;
+						return `
+          <li class="bar" style="--accent:${accent}; --bot:${botAccent};">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              ${tooltip}
             </div>
-            <span class="dot"></span>
           </li>
         `;
 					})
 					.join("")
-			: '<li class="empty">No events recorded yet.</li>';
+			: '<li class="empty-bar">No events recorded yet.</li>';
 	const html = `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -415,123 +434,163 @@ function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
     <style>
       :root {
         color-scheme: light dark;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
       }
       body {
         margin: 0;
-        padding: 1.5rem;
-        background: #0b0c10;
-        color: #f5f5f5;
+        padding: 1.5rem 1.5rem 2rem;
+        background: radial-gradient(circle at 10% 20%, rgba(80, 200, 255, 0.18), transparent 25%),
+          radial-gradient(circle at 90% 10%, rgba(244, 114, 182, 0.2), transparent 28%),
+          #06070c;
+        color: #eaf0f7;
       }
       h1 {
         margin-top: 0;
-        font-size: 1.5rem;
+        font-size: 1.6rem;
+        letter-spacing: 0.01em;
       }
-      .timeline-wrapper {
+      p {
+        color: #b9c3d4;
+        margin-bottom: 0.5rem;
+      }
+      .timeline-shell {
         position: relative;
-        margin-top: 2rem;
-        padding-left: 50%;
+        margin-top: 1rem;
+        padding: 0.75rem 0 0.5rem;
       }
       .timeline {
         list-style: none;
-        padding: 0;
+        padding: 1rem 0 0.25rem;
         margin: 0;
-        position: relative;
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        align-items: flex-end;
+        height: 130px;
       }
-      .timeline::before {
-        content: "";
+      .timeline::-webkit-scrollbar {
+        height: 6px;
+      }
+      .timeline::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+      }
+      .track {
         position: absolute;
-        top: 0;
-        left: calc(50% - 2px);
-        width: 4px;
+        top: 58px;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, rgba(80, 200, 255, 0.65), rgba(167, 139, 250, 0.45), rgba(244, 114, 182, 0.6));
+        opacity: 0.85;
+        border-radius: 999px;
+      }
+      .bar {
+        position: relative;
+        flex: 0 0 16px;
         height: 100%;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(80, 200, 255, 0.2));
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
       }
-      .event {
-        position: relative;
-        margin-bottom: 2rem;
-        width: 50%;
-      }
-      .event.left {
-        left: -50%;
-        padding-right: 2.5rem;
-        text-align: right;
-      }
-      .event.right {
-        padding-left: 2.5rem;
-      }
-      .bubble {
-        display: inline-block;
-        max-width: 100%;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        padding: 1rem;
-        border-radius: 1rem;
-        box-shadow: 0 0 20px rgba(0, 0, 0, 0.25);
-      }
-      .dot {
+      .bar-fill {
         position: absolute;
-        top: 1rem;
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
-        background: #50c8ff;
-        box-shadow: 0 0 12px rgba(80, 200, 255, 0.8);
+        bottom: 0;
+        width: 100%;
+        height: 60px;
+        background: linear-gradient(180deg, var(--accent, #50c8ff), rgba(255, 255, 255, 0));
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+        transition: transform 120ms ease, box-shadow 120ms ease;
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
-      .event.left .dot {
-        right: -8px;
+      .bar:hover .bar-fill {
+        transform: translateY(-4px);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
       }
-      .event.right .dot {
-        left: -8px;
+      .tooltip {
+        position: absolute;
+        bottom: 110%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 240px;
+        background: rgba(9, 12, 20, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        padding: 0.75rem;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms ease, transform 120ms ease;
+        z-index: 10;
       }
-      .event-type {
+      .bar:hover .tooltip {
+        opacity: 1;
+        transform: translateX(-50%) translateY(-4px);
+        pointer-events: auto;
+      }
+      .tooltip-header {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        font-size: 0.7rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
       }
-      .meta {
-        display: flex;
-        justify-content: space-between;
-        gap: 1rem;
-        font-size: 0.9rem;
-        color: rgba(255, 255, 255, 0.8);
-        margin-bottom: 0.5rem;
+      .event-pill {
+        color: #06121a;
+        background: var(--accent, #50c8ff);
       }
-      pre {
-        margin: 0;
-        padding: 0.75rem;
-        background: rgba(0, 0, 0, 0.3);
-        border-radius: 0.5rem;
-        overflow-x: auto;
+      .bot-pill {
+        background: rgba(255, 255, 255, 0.08);
+        color: #eaf0f7;
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+      .tooltip-participants {
+        margin-top: 0.4rem;
+        color: #cdd7e6;
         font-size: 0.85rem;
       }
-      .empty {
+      .tooltip-content {
+        margin: 0.4rem 0 0;
+        color: #eaf0f7;
+        font-size: 0.9rem;
+      }
+      time {
+        font-size: 0.75rem;
+        opacity: 0.75;
+        margin-left: auto;
+      }
+      .empty-bar {
         text-align: center;
-        padding: 2rem;
+        padding: 1rem;
         width: 100%;
         color: rgba(255, 255, 255, 0.7);
+        border: 1px dashed rgba(255, 255, 255, 0.25);
+        border-radius: 0.75rem;
       }
       a {
         color: #50c8ff;
       }
       @media (max-width: 768px) {
-        .timeline-wrapper {
-          padding-left: 1.5rem;
+        body {
+          padding: 1.25rem;
         }
-        .timeline::before {
-          left: 1rem;
+        .timeline {
+          height: 110px;
         }
-        .event,
-        .event.left,
-        .event.right {
-          width: 100%;
-          left: 0;
-          padding-left: 2rem;
-          padding-right: 0;
-          text-align: left;
-        }
-        .event .dot {
-          left: -0.5rem;
+        .tooltip {
+          width: 200px;
         }
       }
     </style>
@@ -539,10 +598,9 @@ function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
   <body>
     <h1>Bot Timeline</h1>
     <p>Showing the latest ${events.length} events captured by the Worker. <a href="/bots/events">Download NDJSON</a></p>
-    <div class="timeline-wrapper">
-      <ul class="timeline">
-        ${items}
-      </ul>
+    <div class="timeline-shell">
+      <div class="track"></div>
+      <ul class="timeline">${items}</ul>
     </div>
   </body>
 </html>`;
@@ -552,6 +610,91 @@ function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
 			"cache-control": "no-store",
 		},
 	});
+}
+
+function extractBotName(payload?: Record<string, unknown>): string | undefined {
+	if (!payload) {
+		return undefined;
+	}
+	const candidate = payload.bot ?? payload.from;
+	return typeof candidate === "string" ? candidate : undefined;
+}
+
+function colorForEvent(event: string): string {
+	if (event.startsWith("message.")) {
+		return "#4ac1ff";
+	}
+	if (event.startsWith("brain.")) {
+		return "#f59e0b";
+	}
+	if (event.startsWith("deploy.")) {
+		return "#a78bfa";
+	}
+	if (event.startsWith("announce")) {
+		return "#22d3ee";
+	}
+	if (event.startsWith("health")) {
+		return "#34d399";
+	}
+	return "#94a3b8";
+}
+
+function colorForBot(bot: string): string {
+	const palette = [
+		"#4ac1ff",
+		"#f472b6",
+		"#a78bfa",
+		"#22d3ee",
+		"#fbbf24",
+		"#10b981",
+		"#fb7185",
+	];
+	let hash = 0;
+	for (let i = 0; i < bot.length; i += 1) {
+		hash = (hash << 5) - hash + bot.charCodeAt(i);
+		hash |= 0;
+	}
+	const index = Math.abs(hash) % palette.length;
+	return palette[index];
+}
+
+function buildParticipantText(payload?: Record<string, unknown>): string {
+	if (!payload) {
+		return "";
+	}
+	const from = typeof payload.from === "string" ? payload.from : undefined;
+	const to = typeof payload.to === "string" ? payload.to : undefined;
+	if (from && to) {
+		return `${from} → ${to}`;
+	}
+	if (from) {
+		return from;
+	}
+	if (to) {
+		return `→ ${to}`;
+	}
+	const bot = typeof payload.bot === "string" ? payload.bot : undefined;
+	return bot ?? "";
+}
+
+function extractContent(payload?: Record<string, unknown>): string {
+	if (!payload) {
+		return "";
+	}
+	if (typeof payload.content === "string") {
+		return payload.content;
+	}
+	if (typeof payload.message === "string") {
+		return payload.message;
+	}
+	return "";
+}
+
+function truncate(text: string, length = 160): string {
+	if (text.length <= length) {
+		return text;
+	}
+	return `${text.slice(0, length - 1)}…`;
 }
 
 function escapeHtml(input: string): string {

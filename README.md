@@ -6,7 +6,8 @@ This project extends the Cloudflare Durable Object starter so that every bot des
 
 - `src/index.ts` – Worker entry point and HTTP routing for bot management.
 - `src/bot.ts` – Durable Object implementation plus registry helpers.
-- `bots.json` – Source of truth for bot properties (`name`, `llmApiKey`, `prompt`, `createdAt`).
+- `bots.json` – Source of truth for bot properties (`name`, `prompt`, `createdAt`).
+- `OPENAI_API_KEY` – Environment variable that supplies the shared OpenAI token at startup.
 - `scripts/deploy-bots.mjs` – Helper that validates the bot list and runs `wrangler deploy` with the correct environment variables.
 
 ## Declaring Bots
@@ -17,26 +18,23 @@ Update `bots.json` with any bots you want to manage. The repository ships with t
 [
   {
     "name": "A",
-    "llmApiKey": "replace-with-real-api-key-a",
     "prompt": "You summarize repository changes in one sentence.",
     "createdAt": "2024-01-01T00:00:00.000Z"
   },
   {
     "name": "B",
-    "llmApiKey": "replace-with-real-api-key-b",
     "prompt": "You focus on deployment status and report blockers.",
     "createdAt": "2024-01-02T00:00:00.000Z"
   },
   {
     "name": "C",
-    "llmApiKey": "replace-with-real-api-key-c",
     "prompt": "You give architecture-level advice for this project.",
     "createdAt": "2024-01-03T00:00:00.000Z"
   }
 ]
 ```
 
-The `llmApiKey` field is stored in Durable Object state, so consider using Wrangler secrets or your own key-management workflow before pushing real keys.
+Set a shared API token with `OPENAI_API_KEY` (for example, in `.dev.vars` locally or via `wrangler secret put OPENAI_API_KEY` in Cloudflare). If you need a per-bot override, add an optional `llmApiKey` field to that bot's entry; overrides are stored with the bot's state.
 
 ## Local Development
 
@@ -63,7 +61,7 @@ On first deployment the Durable Object also seeds its message history with the p
 
 ### Bot brains (LLM responses)
 
-Whenever a bot receives a message, it now forwards its prompt plus the most recent conversation snippets to OpenAI (`gpt-5`) through the Vercel AI SDK. The bot-specific `llmApiKey` from `bots.json` is used for the call, and the generated reply is appended to the bot's message history automatically. Make sure each bot's `llmApiKey` is populated with a real API key before deploying so the brain can respond.
+Whenever a bot receives a message, it now forwards its prompt plus the most recent conversation snippets to OpenAI (`gpt-5`) through the Vercel AI SDK. The shared `OPENAI_API_KEY` powers the call unless a bot declares its own `llmApiKey` override in `bots.json`. The generated reply is appended to the bot's message history automatically.
 
 ### Bot-to-bot messaging
 
@@ -95,7 +93,7 @@ All deployments go through the helper script, which keeps `BOT_DEPLOY_TARGETS` i
 ### Deployment Quickstart
 
 1. Run `npm install` (first time only).
-2. Edit `bots.json` and customize the provided sample entries (replace the placeholder API keys and prompts).
+2. Edit `bots.json` and customize the provided sample entries (prompts, names, timestamps). Set `OPENAI_API_KEY` in your environment before deploying.
 3. Deploy just that bot:
    ```bash
    npm run deploy:bots -- --bot A --url https://<your-worker-subdomain>
@@ -152,4 +150,4 @@ Because this is destructive, make sure you've backed up any data you care about 
 
 1. Run `wrangler tail` (optional) to watch logs.
 2. Use `curl` (or any HTTP client) against your Worker URL to hit the same `/bots` endpoints shown above.
-3. Each Durable Object stores `name`, `llmApiKey`, `prompt`, `createdAt`, the latest `knownBots` list, and a message history (seeded with the prompt on first deploy) so you can later wire them into your LLM execution pipeline.
+3. Each Durable Object stores `name`, `llmApiKey` (only when you set a per-bot override), `prompt`, `createdAt`, the latest `knownBots` list, and a message history (seeded with the prompt on first deploy) so you can later wire them into your LLM execution pipeline.
