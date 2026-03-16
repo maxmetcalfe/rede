@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bot Timeline</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background: #ffffff;
+        color: #0f172a;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 1.5rem;
+        letter-spacing: 0.015em;
+      }
+      p {
+        color: #334155;
+        margin-bottom: 0.75rem;
+        max-width: 720px;
+      }
+      .timeline-shell {
+        position: relative;
+        margin-top: 1.25rem;
+        padding: 0.75rem 0 0.25rem;
+      }
+      .legend {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        padding: 0.9rem 1rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .legend-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        font-size: 0.95rem;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        background: #ffffff;
+        color: #0f172a;
+      }
+      .chip.message { border-color: #2563eb33; color: #1d4ed8; }
+      .chip.brain { border-color: #f9731633; color: #c2410c; }
+      .chip.deploy { border-color: #7c3aed33; color: #6d28d9; }
+      .chip.announce { border-color: #0ea5e933; color: #0284c7; }
+      .chip.health { border-color: #16a34a33; color: #15803d; }
+      .timeline {
+        list-style: none;
+        padding: 1rem 0 0.5rem;
+        margin: 0;
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        align-items: flex-end;
+        height: 140px;
+      }
+      .timeline .bar::after {
+        content: attr(data-label);
+        position: absolute;
+        bottom: -1.4rem;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 0.7rem;
+        color: #475569;
+        white-space: nowrap;
+      }
+      .timeline::-webkit-scrollbar {
+        height: 8px;
+      }
+      .timeline::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 999px;
+      }
+      .track {
+        position: absolute;
+        top: 64px;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, #e2e8f0, #cbd5e1);
+        border-radius: 999px;
+      }
+      .bar {
+        position: relative;
+        flex: 0 0 16px;
+        height: 100%;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+      }
+      .bar-fill {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        height: 60px;
+        background: linear-gradient(180deg, var(--accent, #2563eb), rgba(255, 255, 255, 0));
+        border-radius: 12px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+        transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+        border: 1px solid rgba(15, 23, 42, 0.05);
+      }
+      .bar:hover .bar-fill {
+        transform: translateY(-4px);
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+        opacity: 0.95;
+      }
+      .tooltip {
+        position: absolute;
+        bottom: 110%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 240px;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 0.8rem;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms ease, transform 120ms ease;
+        z-index: 10;
+      }
+      .bar:hover .tooltip {
+        opacity: 1;
+        transform: translateX(-50%) translateY(-4px);
+        pointer-events: auto;
+      }
+      .tooltip-header {
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        flex-wrap: wrap;
+        color: #0f172a;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 0.72rem;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+      }
+      .event-pill {
+        color: #0b1220;
+        background: var(--accent, #2563eb);
+      }
+      .bot-pill {
+        background: #f8fafc;
+        color: #0f172a;
+        border-color: #e2e8f0;
+      }
+      .tooltip-participants {
+        margin-top: 0.4rem;
+        color: #334155;
+        font-size: 0.88rem;
+      }
+      .tooltip-content {
+        margin: 0.4rem 0 0;
+        color: #0f172a;
+        font-size: 0.95rem;
+      }
+      time {
+        font-size: 0.78rem;
+        color: #475569;
+        margin-left: auto;
+      }
+      .empty-bar {
+        text-align: center;
+        padding: 1rem;
+        width: 100%;
+        color: #475569;
+        border: 1px dashed #e2e8f0;
+        border-radius: 0.75rem;
+        background: #f8fafc;
+      }
+      a {
+        color: #2563eb;
+      }
+      @media (max-width: 768px) {
+        body {
+          padding: 1.5rem;
+        }
+        .timeline {
+          height: 120px;
+        }
+        .tooltip {
+          width: 200px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bot Timeline</h1>
+    <p>Showing the latest 13 events captured by the Worker. <a href="/bots/events">Download NDJSON</a></p>
+    <div class="legend">
+      <div class="legend-row">
+        <span class="pill event-pill">Event</span>
+        <span class="chip message">message.*</span>
+        <span class="chip brain">brain.*</span>
+        <span class="chip deploy">deploy.*</span>
+        <span class="chip announce">announce*</span>
+        <span class="chip health">health*</span>
+      </div>
+      <div class="legend-row">
+        <span class="pill bot-pill">Bot</span>
+        <span>Color-coded by bot name; hover to see exact bot + message.</span>
+      </div>
+    </div>
+    <div class="timeline-shell">
+      <div class="track"></div>
+      <ul class="timeline">
+          <li class="bar" data-label="deploy.auto.start" style="--accent:#7c3aed; --bot:#7c3aed;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">deploy.auto.start</span>
+                
+                <time>2025-12-10T17:02:48.235Z</time>
+              </div>
+              
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · durable.deploy" style="--accent:#6b7280; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">durable.deploy</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:48.336Z</time>
+              </div>
+              <div class="tooltip-participants">A</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · announce.start" style="--accent:#0ea5e9; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">announce.start</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.228Z</time>
+              </div>
+              <div class="tooltip-participants">A</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="B · message.receive" style="--accent:#2563eb; --bot:#22d3ee;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">message.receive</span>
+                <span class="pill bot-pill">B</span>
+                <time>2025-12-10T17:02:50.278Z</time>
+              </div>
+              <div class="tooltip-participants">A</div>
+              <p class="tooltip-content">I&#39;m here</p>
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="B · brain.skip" style="--accent:#f97316; --bot:#22d3ee;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">brain.skip</span>
+                <span class="pill bot-pill">B</span>
+                <time>2025-12-10T17:02:50.280Z</time>
+              </div>
+              <div class="tooltip-participants">B</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="C · message.receive" style="--accent:#2563eb; --bot:#fbbf24;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">message.receive</span>
+                <span class="pill bot-pill">C</span>
+                <time>2025-12-10T17:02:50.287Z</time>
+              </div>
+              <div class="tooltip-participants">A</div>
+              <p class="tooltip-content">I&#39;m here</p>
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="C · brain.skip" style="--accent:#f97316; --bot:#fbbf24;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">brain.skip</span>
+                <span class="pill bot-pill">C</span>
+                <time>2025-12-10T17:02:50.287Z</time>
+              </div>
+              <div class="tooltip-participants">C</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · message.send" style="--accent:#2563eb; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">message.send</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.296Z</time>
+              </div>
+              <div class="tooltip-participants">A → B</div>
+              <p class="tooltip-content">I&#39;m here</p>
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · announce.sent" style="--accent:#0ea5e9; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">announce.sent</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.297Z</time>
+              </div>
+              <div class="tooltip-participants">A → B</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · message.send" style="--accent:#2563eb; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">message.send</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.298Z</time>
+              </div>
+              <div class="tooltip-participants">A → C</div>
+              <p class="tooltip-content">I&#39;m here</p>
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · announce.sent" style="--accent:#0ea5e9; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">announce.sent</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.299Z</time>
+              </div>
+              <div class="tooltip-participants">A → C</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="A · deploy.complete" style="--accent:#7c3aed; --bot:#a78bfa;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">deploy.complete</span>
+                <span class="pill bot-pill">A</span>
+                <time>2025-12-10T17:02:50.299Z</time>
+              </div>
+              <div class="tooltip-participants">A</div>
+              
+            
+            </div>
+          </li>
+        
+          <li class="bar" data-label="B · durable.deploy" style="--accent:#6b7280; --bot:#22d3ee;">
+            <div class="bar-fill"></div>
+            <div class="tooltip">
+              
+              <div class="tooltip-header">
+                <span class="pill event-pill">durable.deploy</span>
+                <span class="pill bot-pill">B</span>
+                <time>2025-12-10T17:02:50.301Z</time>
+              </div>
+              <div class="tooltip-participants">B</div>
+              
+            
+            </div>
+          </li>
+        </ul>
+    </div>
+  </body>
+</html>

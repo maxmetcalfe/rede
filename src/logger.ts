@@ -30,3 +30,7 @@ export function logEvent(event: string, payload?: LogPayload): void {
 export function getEventLog(): LogEntry[] {
 	return [...eventBuffer];
 }
+
+export function clearEventLog(): void {
+	eventBuffer.length = 0;
+}

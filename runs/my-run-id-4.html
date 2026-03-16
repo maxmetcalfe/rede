@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bot Timeline</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #ffffff;
+        color: #0f172a;
+        font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: #334155;
+      }
+      a {
+        color: #2563eb;
+      }
+      .timeline-shell {
+        border: 1px solid #e2e8f0;
+        background: #f8fafc;
+        padding: 12px;
+        overflow: auto;
+        max-height: 80vh;
+      }
+      .timeline-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .event-row {
+        padding: 10px;
+        border: 1px solid #e2e8f0;
+        background: #ffffff;
+      }
+      .event-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        font-size: 13px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid #94a3b8;
+        background: #e2e8f0;
+        color: #0f172a;
+      }
+      .bot-pill {
+        background: #eef2ff;
+        color: #312e81;
+        border-color: #c7d2fe;
+      }
+      time {
+        color: #475569;
+        font-size: 12px;
+      }
+      .participants {
+        color: #0f172a;
+        font-weight: 600;
+      }
+      .content-preview {
+        color: #475569;
+      }
+      .payload {
+        margin: 8px 0 0;
+        font-size: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 8px;
+        overflow: auto;
+        max-height: 200px;
+        border: 1px solid #0f172a;
+      }
+      .payload.muted {
+        background: #f8fafc;
+        color: #94a3b8;
+        border: 1px dashed #e2e8f0;
+      }
+      .empty-row {
+        padding: 12px;
+        border: 1px dashed #e2e8f0;
+        color: #475569;
+        background: #ffffff;
+      }
+      @media (max-width: 768px) {
+        body {
+          padding: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bot Timeline</h1>
+    <p>Showing the latest 13 events. <a href="/bots/events">Download NDJSON</a></p>
+    <div class="timeline-shell">
+      <ul class="timeline-list">
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">deploy.auto.start</span>
+              
+              <time>2025-12-10T17:31:14.159Z</time>
+              
+              
+            </div>
+            <pre class="payload">{
+  &quot;bots&quot;: [
+    &quot;A&quot;,
+    &quot;B&quot;,
+    &quot;C&quot;
+  ]
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">durable.deploy</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:14.195Z</time>
+              <span class="participants">A</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;A&quot;,
+  &quot;knownBots&quot;: 3
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">announce.start</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.156Z</time>
+              <span class="participants">A</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;A&quot;,
+  &quot;peerCount&quot;: 2
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">message.receive</span>
+              <span class="pill bot-pill">B</span>
+              <time>2025-12-10T17:31:16.232Z</time>
+              <span class="participants">A</span>
+              <span class="content-preview">I&#39;m here</span>
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;B&quot;,
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;content&quot;: &quot;I&#39;m here&quot;,
+  &quot;timestamp&quot;: &quot;2025-12-10T17:31:16.226Z&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">brain.skip</span>
+              <span class="pill bot-pill">B</span>
+              <time>2025-12-10T17:31:16.233Z</time>
+              <span class="participants">B</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;B&quot;,
+  &quot;reason&quot;: &quot;conversation-expired&quot;,
+  &quot;startedAt&quot;: &quot;2025-12-10T16:41:18.070Z&quot;,
+  &quot;ttlSeconds&quot;: 20
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">message.receive</span>
+              <span class="pill bot-pill">C</span>
+              <time>2025-12-10T17:31:16.244Z</time>
+              <span class="participants">A</span>
+              <span class="content-preview">I&#39;m here</span>
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;C&quot;,
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;content&quot;: &quot;I&#39;m here&quot;,
+  &quot;timestamp&quot;: &quot;2025-12-10T17:31:16.228Z&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">brain.skip</span>
+              <span class="pill bot-pill">C</span>
+              <time>2025-12-10T17:31:16.245Z</time>
+              <span class="participants">C</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;C&quot;,
+  &quot;reason&quot;: &quot;conversation-expired&quot;,
+  &quot;startedAt&quot;: &quot;2025-12-10T16:41:18.071Z&quot;,
+  &quot;ttlSeconds&quot;: 20
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">message.send</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.251Z</time>
+              <span class="participants">A → B</span>
+              <span class="content-preview">I&#39;m here</span>
+            </div>
+            <pre class="payload">{
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;to&quot;: &quot;B&quot;,
+  &quot;content&quot;: &quot;I&#39;m here&quot;,
+  &quot;timestamp&quot;: &quot;2025-12-10T17:31:16.226Z&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">announce.sent</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.251Z</time>
+              <span class="participants">A → B</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;to&quot;: &quot;B&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">message.send</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.253Z</time>
+              <span class="participants">A → C</span>
+              <span class="content-preview">I&#39;m here</span>
+            </div>
+            <pre class="payload">{
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;to&quot;: &quot;C&quot;,
+  &quot;content&quot;: &quot;I&#39;m here&quot;,
+  &quot;timestamp&quot;: &quot;2025-12-10T17:31:16.228Z&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">announce.sent</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.253Z</time>
+              <span class="participants">A → C</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;from&quot;: &quot;A&quot;,
+  &quot;to&quot;: &quot;C&quot;
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">deploy.complete</span>
+              <span class="pill bot-pill">A</span>
+              <time>2025-12-10T17:31:16.253Z</time>
+              <span class="participants">A</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;A&quot;,
+  &quot;knownBots&quot;: 3
+}</pre>
+          </li>
+        
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">durable.deploy</span>
+              <span class="pill bot-pill">B</span>
+              <time>2025-12-10T17:31:16.255Z</time>
+              <span class="participants">B</span>
+              
+            </div>
+            <pre class="payload">{
+  &quot;bot&quot;: &quot;B&quot;,
+  &quot;knownBots&quot;: 3
+}</pre>
+          </li>
+        </ul>
+    </div>
+  </body>
+</html>

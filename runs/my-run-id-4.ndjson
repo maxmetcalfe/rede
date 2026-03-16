@@ -1,0 +1,13 @@
+{"event":"deploy.auto.start","timestamp":"2025-12-10T17:31:14.159Z","payload":{"bots":["A","B","C"]}}
+{"event":"durable.deploy","timestamp":"2025-12-10T17:31:14.195Z","payload":{"bot":"A","knownBots":3}}
+{"event":"announce.start","timestamp":"2025-12-10T17:31:16.156Z","payload":{"bot":"A","peerCount":2}}
+{"event":"message.receive","timestamp":"2025-12-10T17:31:16.232Z","payload":{"bot":"B","from":"A","content":"I'm here","timestamp":"2025-12-10T17:31:16.226Z"}}
+{"event":"brain.skip","timestamp":"2025-12-10T17:31:16.233Z","payload":{"bot":"B","reason":"conversation-expired","startedAt":"2025-12-10T16:41:18.070Z","ttlSeconds":20}}
+{"event":"message.receive","timestamp":"2025-12-10T17:31:16.244Z","payload":{"bot":"C","from":"A","content":"I'm here","timestamp":"2025-12-10T17:31:16.228Z"}}
+{"event":"brain.skip","timestamp":"2025-12-10T17:31:16.245Z","payload":{"bot":"C","reason":"conversation-expired","startedAt":"2025-12-10T16:41:18.071Z","ttlSeconds":20}}
+{"event":"message.send","timestamp":"2025-12-10T17:31:16.251Z","payload":{"from":"A","to":"B","content":"I'm here","timestamp":"2025-12-10T17:31:16.226Z"}}
+{"event":"announce.sent","timestamp":"2025-12-10T17:31:16.251Z","payload":{"from":"A","to":"B"}}
+{"event":"message.send","timestamp":"2025-12-10T17:31:16.253Z","payload":{"from":"A","to":"C","content":"I'm here","timestamp":"2025-12-10T17:31:16.228Z"}}
+{"event":"announce.sent","timestamp":"2025-12-10T17:31:16.253Z","payload":{"from":"A","to":"C"}}
+{"event":"deploy.complete","timestamp":"2025-12-10T17:31:16.253Z","payload":{"bot":"A","knownBots":3}}
+{"event":"durable.deploy","timestamp":"2025-12-10T17:31:16.255Z","payload":{"bot":"B","knownBots":3}}

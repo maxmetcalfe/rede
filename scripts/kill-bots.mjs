@@ -128,6 +128,28 @@ async function appendRecreateMigration(config, prefix) {
 }
 
 async function runKillSequence() {
+  const runId = (process.env.RUN_ID ?? "").trim();
+  if (runId) {
+    try {
+      const archiveScript = path.join(
+        projectRoot,
+        "scripts",
+        "archive-timeline.mjs",
+      );
+      console.log(
+        `Saving timeline for runId="${runId}" before deleting Durable Objects…`,
+      );
+      await spawnAsync("node", [archiveScript, "--run", runId], {
+        cwd: projectRoot,
+        env: process.env,
+      });
+    } catch (error) {
+      console.warn(
+        `Unable to save timeline before kill: ${error.message ?? error}`,
+      );
+    }
+  }
+
   const { config, prefix } = await loadConfig();
 
   if (

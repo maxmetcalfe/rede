@@ -1,7 +1,3 @@
-import type {
-	DurableObjectStub,
-	ExecutionContext,
-} from "cloudflare:workers";
 import {
 	BotDurableObject,
 	BotRegistry,
@@ -10,7 +6,7 @@ import {
 	StoredBot,
 	jsonResponse,
 } from "./bot";
-import { getEventLog, logEvent } from "./logger";
+import { clearEventLog, getEventLog, logEvent } from "./logger";
 
 export { BotDurableObject };
 
@@ -53,38 +49,64 @@ export default {
 			return new Response("Not Found", { status: 404 });
 		}
 
-	if (!maybeName) {
-		if (request.method !== "GET") {
-			return new Response("Method Not Allowed", { status: 405 });
+		if (!maybeName) {
+			if (request.method !== "GET") {
+				return new Response("Method Not Allowed", { status: 405 });
+			}
+			const bots = registry.getActiveBots().map((bot) =>
+				registry.sanitize({
+					...bot,
+					createdAt: bot.createdAt ?? "not-set",
+				}),
+			);
+			return jsonResponse(bots);
 		}
-		const bots = registry.getActiveBots().map((bot) =>
-			registry.sanitize({
-				...bot,
-				createdAt: bot.createdAt ?? "not-set",
-			}),
-		);
-		return jsonResponse(bots);
-	}
 
-	if (maybeName === "events") {
-		if (request.method !== "GET") {
-			return new Response("Method Not Allowed", { status: 405 });
+		if (maybeName === "events") {
+			if (maybeAction === "reset") {
+				if (request.method !== "POST") {
+					return new Response("Method Not Allowed", { status: 405 });
+				}
+				clearEventLog();
+				return jsonResponse({ message: "Event log cleared." });
+			}
+			if (request.method !== "GET") {
+				return new Response("Method Not Allowed", { status: 405 });
+			}
+			const events = getEventLog();
+			if (maybeAction === "timeline") {
+				return renderTimeline(events);
+			}
+			if (maybeAction && maybeAction.length > 0) {
+				return new Response("Not Found", { status: 404 });
+			}
+			const body = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+			return new Response(body, {
+				headers: {
+					"content-type": "application/x-ndjson",
+					"cache-control": "no-store",
+				},
+			});
 		}
-		const events = getEventLog();
-		if (maybeAction === "timeline") {
-			return renderTimeline(events);
+
+		if (maybeName === "reset") {
+			if (request.method !== "POST") {
+				return new Response("Method Not Allowed", { status: 405 });
+			}
+			const resetBots = registry.getActiveBots();
+			await Promise.all(
+				resetBots.map(async (bot) => {
+					const resetStub = env.BOTS.getByName(bot.name);
+					await resetStub.resetState();
+				}),
+			);
+			clearEventLog();
+			autoDeployPromise = undefined;
+			return jsonResponse({
+				message: "All active bot state cleared.",
+				bots: resetBots.map((bot) => bot.name),
+			});
 		}
-		if (maybeAction && maybeAction.length > 0) {
-			return new Response("Not Found", { status: 404 });
-		}
-		const body = events.map((event) => JSON.stringify(event)).join("\n") + "\n";
-		return new Response(body, {
-			headers: {
-				"content-type": "application/x-ndjson",
-				"cache-control": "no-store",
-			},
-		});
-	}
 
 		const definitionOrResponse = ensureBotDefinition(maybeName, registry);
 	if (definitionOrResponse instanceof Response) {
@@ -93,7 +115,7 @@ export default {
 		const targetBot = definitionOrResponse;
 		const stub = env.BOTS.getByName(targetBot.name);
 
-		if (maybeAction === "deploy") {
+			if (maybeAction === "deploy") {
 			if (request.method !== "POST") {
 				return new Response("Method Not Allowed", { status: 405 });
 			}
@@ -113,11 +135,11 @@ export default {
 			);
 		}
 
-		if (maybeAction === "message") {
-			if (request.method !== "POST") {
-				return new Response("Method Not Allowed", { status: 405 });
-			}
-			let body: { to?: string; content?: string };
+			if (maybeAction === "message") {
+				if (request.method !== "POST") {
+					return new Response("Method Not Allowed", { status: 405 });
+				}
+				let body: { to?: string; content?: string };
 			try {
 				body = await request.json();
 			} catch {
@@ -126,16 +148,16 @@ export default {
 			const to = typeof body.to === "string" ? body.to.trim() : "";
 			const content =
 				typeof body.content === "string" ? body.content.trim() : "";
-			if (!to || !content) {
-				return new Response(
-					'Both "to" and "content" fields are required.',
-					{ status: 400 },
-				);
-			}
-			const recipientOrResponse = ensureBotDefinition(to, registry);
-			if (recipientOrResponse instanceof Response) {
-				return recipientOrResponse;
-			}
+				if (!to || !content) {
+					return new Response(
+						'Both "to" and "content" fields are required.',
+						{ status: 400 },
+					);
+				}
+				const recipientOrResponse = ensureBotDefinition(to, registry);
+				if (recipientOrResponse instanceof Response) {
+					return recipientOrResponse;
+				}
 			const recipient = recipientOrResponse;
 			const timestamp = await sendMessageBetweenBots(
 				targetBot,
@@ -145,11 +167,21 @@ export default {
 				env,
 				url.origin,
 			);
-			return jsonResponse({
-				message: `Bot "${targetBot.name}" sent a message to "${recipient.name}".`,
-				timestamp,
-			});
-		}
+				return jsonResponse({
+					message: `Bot "${targetBot.name}" sent a message to "${recipient.name}".`,
+					timestamp,
+				});
+			}
+
+			if (maybeAction === "reset") {
+				if (request.method !== "POST") {
+					return new Response("Method Not Allowed", { status: 405 });
+				}
+				await stub.resetState();
+				return jsonResponse({
+					message: `Bot "${targetBot.name}" state cleared.`,
+				});
+			}
 
 		if (maybeAction === "health") {
 			if (request.method !== "GET") {
@@ -236,7 +268,7 @@ async function deployBot(
 	origin: string,
 ): Promise<StoredBot> {
 	const payload = buildDeploymentPayload(targetBot, registry, origin);
-	const deployed = await stub.deploy(payload);
+	const deployed = await initializeBotState(stub, payload);
 	await new Promise((resolve) => setTimeout(resolve, 2000));
 	await announcePresence(targetBot, registry, env, origin);
 	logEvent("deploy.complete", {
@@ -244,6 +276,13 @@ async function deployBot(
 		knownBots: payload.peers.length,
 	});
 	return deployed;
+}
+
+async function initializeBotState(
+	stub: DurableObjectStub<BotDurableObject>,
+	payload: BotDeploymentPayload,
+): Promise<StoredBot> {
+	return stub.deploy(payload);
 }
 
 async function ensureBotState(
@@ -256,7 +295,10 @@ async function ensureBotState(
 	try {
 		await stub.getProfile();
 	} catch {
-		await deployBot(stub, targetBot, registry, env, origin);
+		await initializeBotState(
+			stub,
+			buildDeploymentPayload(targetBot, registry, origin),
+		);
 	}
 }
 
@@ -266,6 +308,13 @@ async function announcePresence(
 	env: Env,
 	origin: string,
 ): Promise<void> {
+	if (isFlagEnabled(readEnvValue(env, "DISABLE_AUTO_ANNOUNCE"))) {
+		logEvent("announce.skip", {
+			bot: targetBot.name,
+			reason: "disabled",
+		});
+		return;
+	}
 	const peers = registry
 		.getActiveBots()
 		.filter((bot) => bot.name !== targetBot.name);
@@ -335,6 +384,9 @@ function scheduleAutoDeployment(
 	origin: string,
 	ctx: ExecutionContext,
 ): void {
+	if (isFlagEnabled(readEnvValue(env, "DISABLE_AUTO_DEPLOY"))) {
+		return;
+	}
 	const bots = registry.getActiveBots();
 	if (bots.length === 0) {
 		return;
@@ -384,48 +436,84 @@ async function autoDeployAllBots(
 	logEvent("deploy.auto.complete", { status: "ok", deployed: bots.length });
 }
 
+function isFlagEnabled(value?: string): boolean {
+	if (typeof value !== "string") {
+		return false;
+	}
+	const normalized = value.trim().toLowerCase();
+	return (
+		normalized === "1" ||
+		normalized === "true" ||
+		normalized === "yes" ||
+		normalized === "on"
+	);
+}
+
+function readEnvValue(
+	env: Env,
+	name: keyof Pick<Env, "BOT_DEPLOY_TARGETS" | "DISABLE_AUTO_ANNOUNCE" | "DISABLE_AUTO_DEPLOY">,
+): string | undefined {
+	for (const [key, value] of Object.entries(env)) {
+		if (!key.startsWith(`${name}=`)) {
+			continue;
+		}
+		const inline = key.slice(name.length + 1).trim();
+		if (inline.length > 0) {
+			return inline;
+		}
+		if (typeof value === "string" && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+	const direct = env[name];
+	return typeof direct === "string" && direct.trim().length > 0
+		? direct.trim()
+		: undefined;
+}
+
 function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
 	const items =
 		events.length > 0
 			? events
 					.map((event) => {
 						const botName = extractBotName(event.payload);
-						const accent = colorForEvent(event.event);
-						const botAccent = botName ? colorForBot(botName) : accent;
 						const participants = buildParticipantText(event.payload);
 						const content = extractContent(event.payload);
-						const tooltip = `
-              <div class="tooltip-header">
-                <span class="pill event-pill">${escapeHtml(event.event)}</span>
-                ${
-									botName
-										? `<span class="pill bot-pill">${escapeHtml(botName)}</span>`
-										: ""
-								}
-                <time>${escapeHtml(event.timestamp)}</time>
-              </div>
+						const payload =
+							event.payload && Object.keys(event.payload).length > 0
+								? escapeHtml(JSON.stringify(event.payload, null, 2))
+								: "";
+						return `
+          <li class="event-row">
+            <div class="event-meta">
+              <span class="pill event-pill">${escapeHtml(event.event)}</span>
+              ${
+								botName
+									? `<span class="pill bot-pill">${escapeHtml(botName)}</span>`
+									: ""
+							}
+              <time>${escapeHtml(event.timestamp)}</time>
               ${
 								participants
-									? `<div class="tooltip-participants">${escapeHtml(participants)}</div>`
+									? `<span class="participants">${escapeHtml(participants)}</span>`
 									: ""
 							}
               ${
 								content
-									? `<p class="tooltip-content">${escapeHtml(truncate(content, 200))}</p>`
+									? `<span class="content-preview">${escapeHtml(truncate(content, 140))}</span>`
 									: ""
 							}
-            `;
-						return `
-          <li class="bar" style="--accent:${accent}; --bot:${botAccent};">
-            <div class="bar-fill"></div>
-            <div class="tooltip">
-              ${tooltip}
             </div>
+            ${
+							payload
+								? `<pre class="payload">${payload}</pre>`
+								: '<pre class="payload muted">{}</pre>'
+						}
           </li>
         `;
 					})
 					.join("")
-			: '<li class="empty-bar">No events recorded yet.</li>';
+			: '<li class="empty-row">No events recorded yet.</li>';
 	const html = `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -433,174 +521,113 @@ function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
     <title>Bot Timeline</title>
     <style>
       :root {
-        color-scheme: light dark;
+        color-scheme: light;
         font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
       }
       body {
         margin: 0;
-        padding: 1.5rem 1.5rem 2rem;
-        background: radial-gradient(circle at 10% 20%, rgba(80, 200, 255, 0.18), transparent 25%),
-          radial-gradient(circle at 90% 10%, rgba(244, 114, 182, 0.2), transparent 28%),
-          #06070c;
-        color: #eaf0f7;
+        padding: 16px;
+        background: #ffffff;
+        color: #0f172a;
+        font-family: "Space Grotesk", "DM Sans", "Segoe UI", system-ui, sans-serif;
       }
       h1 {
-        margin-top: 0;
-        font-size: 1.6rem;
-        letter-spacing: 0.01em;
+        margin: 0 0 8px;
+        font-size: 20px;
       }
       p {
-        color: #b9c3d4;
-        margin-bottom: 0.5rem;
+        margin: 0 0 12px;
+        color: #334155;
+      }
+      a {
+        color: #2563eb;
       }
       .timeline-shell {
-        position: relative;
-        margin-top: 1rem;
-        padding: 0.75rem 0 0.5rem;
+        border: 1px solid #e2e8f0;
+        background: #f8fafc;
+        padding: 12px;
+        overflow: auto;
+        max-height: 80vh;
       }
-      .timeline {
+      .timeline-list {
         list-style: none;
-        padding: 1rem 0 0.25rem;
         margin: 0;
+        padding: 0;
         display: flex;
-        gap: 6px;
-        overflow-x: auto;
-        align-items: flex-end;
-        height: 130px;
+        flex-direction: column;
+        gap: 12px;
       }
-      .timeline::-webkit-scrollbar {
-        height: 6px;
+      .event-row {
+        padding: 10px;
+        border: 1px solid #e2e8f0;
+        background: #ffffff;
       }
-      .timeline::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.12);
-        border-radius: 999px;
-      }
-      .track {
-        position: absolute;
-        top: 58px;
-        left: 0;
-        right: 0;
-        height: 2px;
-        background: linear-gradient(90deg, rgba(80, 200, 255, 0.65), rgba(167, 139, 250, 0.45), rgba(244, 114, 182, 0.6));
-        opacity: 0.85;
-        border-radius: 999px;
-      }
-      .bar {
-        position: relative;
-        flex: 0 0 16px;
-        height: 100%;
+      .event-meta {
         display: flex;
-        align-items: flex-end;
-        justify-content: center;
-      }
-      .bar-fill {
-        position: absolute;
-        bottom: 0;
-        width: 100%;
-        height: 60px;
-        background: linear-gradient(180deg, var(--accent, #50c8ff), rgba(255, 255, 255, 0));
-        border-radius: 10px;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-        transition: transform 120ms ease, box-shadow 120ms ease;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .bar:hover .bar-fill {
-        transform: translateY(-4px);
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
-      }
-      .tooltip {
-        position: absolute;
-        bottom: 110%;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 240px;
-        background: rgba(9, 12, 20, 0.95);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 12px;
-        padding: 0.75rem;
-        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 120ms ease, transform 120ms ease;
-        z-index: 10;
-      }
-      .bar:hover .tooltip {
-        opacity: 1;
-        transform: translateX(-50%) translateY(-4px);
-        pointer-events: auto;
-      }
-      .tooltip-header {
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
         flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        font-size: 13px;
       }
       .pill {
         display: inline-flex;
         align-items: center;
-        gap: 0.25rem;
-        padding: 0.15rem 0.5rem;
-        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 12px;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        font-size: 0.7rem;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-      }
-      .event-pill {
-        color: #06121a;
-        background: var(--accent, #50c8ff);
+        border: 1px solid #94a3b8;
+        background: #e2e8f0;
+        color: #0f172a;
       }
       .bot-pill {
-        background: rgba(255, 255, 255, 0.08);
-        color: #eaf0f7;
-        border-color: rgba(255, 255, 255, 0.16);
-      }
-      .tooltip-participants {
-        margin-top: 0.4rem;
-        color: #cdd7e6;
-        font-size: 0.85rem;
-      }
-      .tooltip-content {
-        margin: 0.4rem 0 0;
-        color: #eaf0f7;
-        font-size: 0.9rem;
+        background: #eef2ff;
+        color: #312e81;
+        border-color: #c7d2fe;
       }
       time {
-        font-size: 0.75rem;
-        opacity: 0.75;
-        margin-left: auto;
+        color: #475569;
+        font-size: 12px;
       }
-      .empty-bar {
-        text-align: center;
-        padding: 1rem;
-        width: 100%;
-        color: rgba(255, 255, 255, 0.7);
-        border: 1px dashed rgba(255, 255, 255, 0.25);
-        border-radius: 0.75rem;
+      .participants {
+        color: #0f172a;
+        font-weight: 600;
       }
-      a {
-        color: #50c8ff;
+      .content-preview {
+        color: #475569;
+      }
+      .payload {
+        margin: 8px 0 0;
+        font-size: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 8px;
+        overflow: auto;
+        max-height: 200px;
+        border: 1px solid #0f172a;
+      }
+      .payload.muted {
+        background: #f8fafc;
+        color: #94a3b8;
+        border: 1px dashed #e2e8f0;
+      }
+      .empty-row {
+        padding: 12px;
+        border: 1px dashed #e2e8f0;
+        color: #475569;
+        background: #ffffff;
       }
       @media (max-width: 768px) {
         body {
-          padding: 1.25rem;
-        }
-        .timeline {
-          height: 110px;
-        }
-        .tooltip {
-          width: 200px;
+          padding: 12px;
         }
       }
     </style>
   </head>
   <body>
     <h1>Bot Timeline</h1>
-    <p>Showing the latest ${events.length} events captured by the Worker. <a href="/bots/events">Download NDJSON</a></p>
+    <p>Showing the latest ${events.length} events. <a href="/bots/events">Download NDJSON</a></p>
     <div class="timeline-shell">
-      <div class="track"></div>
-      <ul class="timeline">${items}</ul>
+      <ul class="timeline-list">${items}</ul>
     </div>
   </body>
 </html>`;
@@ -622,21 +649,21 @@ function extractBotName(payload?: Record<string, unknown>): string | undefined {
 
 function colorForEvent(event: string): string {
 	if (event.startsWith("message.")) {
-		return "#4ac1ff";
+		return "#2563eb";
 	}
 	if (event.startsWith("brain.")) {
-		return "#f59e0b";
+		return "#f97316";
 	}
 	if (event.startsWith("deploy.")) {
-		return "#a78bfa";
+		return "#7c3aed";
 	}
 	if (event.startsWith("announce")) {
-		return "#22d3ee";
+		return "#0ea5e9";
 	}
 	if (event.startsWith("health")) {
-		return "#34d399";
+		return "#16a34a";
 	}
-	return "#94a3b8";
+	return "#6b7280";
 }
 
 function colorForBot(bot: string): string {
