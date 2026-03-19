@@ -9,6 +9,12 @@
       "new_sqlite_classes": [
         "BotDurableObject"
       ]
+    },
+    {
+      "tag": "event-log-v1",
+      "new_sqlite_classes": [
+        "EventLogDurableObject"
+      ]
     }
   ],
   "durable_objects": {
@@ -16,6 +22,10 @@
       {
         "class_name": "BotDurableObject",
         "name": "BOTS"
+      },
+      {
+        "class_name": "EventLogDurableObject",
+        "name": "EVENT_LOG"
       }
     ]
   },

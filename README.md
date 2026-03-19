@@ -1,51 +1,43 @@
 # rede
 
-`rede` is a Cloudflare Workers project for running a network of LLM-backed agents on top of Durable Objects.
+Cloudflare Workers + Durable Objects runtime for small networks of LLM-backed bots.
 
-Each bot in [`bots.json`](./bots.json) maps to one named Durable Object instance. Bots persist their own state, receive messages, call an LLM to decide what to say next, and can forward messages to other bots in the network.
+`rede` is a Cloudflare Workers project for running a small network of LLM-backed bots on top of Durable Objects.
 
-The current implementation is best described as:
+Each bot in [`bots.json`](./bots.json) maps to a named Durable Object instance. Bots keep their own message history and coordination ledger, exchange messages through worker endpoints, and optionally use a constrained `web_fetch` tool to inspect public web pages.
 
-- One Durable Object class, many named instances.
-- Message-driven agents with persistent per-bot state.
-- LLM-generated replies with simple recipient routing.
-- Structured coordination updates shared between bots.
-- Short-lived conversation windows rather than open-ended autonomous execution.
+## What It Is
 
-It is not yet a general workflow engine, scheduler, or arbitrary graph runtime for long-running agent jobs.
+- One Durable Object class, many named bot instances.
+- Message-driven bot coordination with persistent per-bot state.
+- Short-lived sessions with cooldowns, reply budgets, and rate-limit backoff.
+- Structured task updates (`claim`, `request`, `report`, `complete`) attached to otherwise natural chat messages.
+- Lightweight observability through an event stream and HTML timeline.
 
-## What Exists Today
+This is not a general workflow engine, job queue, or arbitrary graph runtime for long-lived autonomous agents.
 
-At runtime, the worker:
+## Repository Layout
 
-- Loads bot definitions from `bots.json`.
-- Auto-deploys active bots on first traffic.
-- Stores each bot's prompt, peer list, message history, and conversation window in Durable Object storage.
-- Stores a per-bot coordination ledger of claimed, requested, reported, and completed tasks.
-- Lets bots exchange messages through worker endpoints.
-- Runs an OpenAI-backed "brain" when a bot receives a message.
-- Exposes lightweight observability via structured event logs and an HTML timeline.
+- [`src/index.ts`](./src/index.ts): worker entrypoint and HTTP API.
+- [`src/bot.ts`](./src/bot.ts): Durable Object runtime for each bot.
+- [`src/logger.ts`](./src/logger.ts): event logging and durable event log storage.
+- [`bots.json`](./bots.json): bot definitions.
+- [`game.json`](./game.json): optional scenario-mode configuration.
+- [`scripts/deploy-bots.mjs`](./scripts/deploy-bots.mjs): deploy selected bots and verify healthchecks.
+- [`scripts/kill-bots.mjs`](./scripts/kill-bots.mjs): destroy and recreate the bot Durable Object namespace.
+- [`scripts/archive-timeline.mjs`](./scripts/archive-timeline.mjs): save the event stream and HTML timeline for a run.
 
-Main files:
+## Runtime Model
 
-- [`src/index.ts`](./src/index.ts): Worker entrypoint, HTTP routes, deployment orchestration.
-- [`src/bot.ts`](./src/bot.ts): Durable Object implementation, message handling, LLM calls, peer routing.
-- [`src/logger.ts`](./src/logger.ts): In-memory event buffer and console logging.
-- [`bots.json`](./bots.json): Bot definitions.
-- [`scripts/deploy-bots.mjs`](./scripts/deploy-bots.mjs): Deploy selected bots and verify healthchecks.
-- [`scripts/kill-bots.mjs`](./scripts/kill-bots.mjs): Delete and recreate the bot Durable Object namespace.
+### Bot definitions
 
-## Architecture
-
-### 1. Bot definitions
-
-Bots are declared statically in `bots.json`:
+Bots are declared statically in [`bots.json`](./bots.json):
 
 ```json
 [
   {
     "name": "A",
-    "prompt": "Project: run a quick market scan using web.fetch...",
+    "prompt": "Research role: editor-synthesizer...",
     "createdAt": "2024-01-01T00:00:00.000Z",
     "speed": 2
   }
@@ -54,70 +46,58 @@ Bots are declared statically in `bots.json`:
 
 Supported fields:
 
-- `name`: Durable Object instance name and bot identifier.
-- `prompt`: The bot's role/instructions.
-- `createdAt`: Optional seed timestamp.
-- `speed`: Optional delay in seconds before the bot acts.
-- `llmApiKey`: Optional per-bot OpenAI API key override.
+- `name`: bot identifier and Durable Object instance name.
+- `prompt`: instructions for the bot.
+- `createdAt`: optional seed timestamp.
+- `speed`: optional delay, in seconds, before the bot responds.
+- `llmApiKey`: optional per-bot API key override.
 
-### 2. Deployment model
+### Deployment and initialization
 
 All bots use the same Durable Object class: `BotDurableObject`.
 
-For each active bot:
+The recommended deployment flow is:
 
-- The worker resolves a named stub with `env.BOTS.getByName(bot.name)`.
-- `deploy()` persists the bot profile and peer list.
-- The first deployment seeds message history with the bot's prompt.
-- Deployments also announce presence to peers with an `"I'm here"` message.
-- Presence announcements do not trigger LLM replies; they only update message history and peer awareness.
+1. Deploy the worker with `BOT_DEPLOY_TARGETS` set to the active bot names.
+2. Call each bot's `/deploy` endpoint.
+3. Verify `/health` for each selected bot.
 
-### 3. Message flow
+Explicit deploys seed state and announce presence to peers with an `"I'm here"` message. Ordinary API reads, event polling, and internal bot-to-bot messaging do not auto-redeploy the swarm.
+
+### Message flow
 
 Messages can enter the system through:
 
 - `POST /bots/:name/message` from a client.
-- Bot presence announcements during deployment.
-- Follow-on messages emitted by another bot's LLM response.
+- Presence announcements during explicit deploys.
+- Follow-on messages emitted by another bot.
 
-When a bot receives a message, it:
+When a bot receives a non-presence message, it:
 
-- Appends the message to persistent history.
-- Starts a conversation window if one is not already active.
-- Waits for the configured `speed` delay.
-- Builds a prompt from its instructions, recent conversation, known peers, and explicit self-context.
-- Calls OpenAI through the Vercel AI SDK.
-- Parses the reply as `{ "message": "...", "recipients": ["..."] }`.
-- Stores its reply locally.
-- Dispatches the reply to the selected peer bots.
+- appends it to persistent history
+- starts or continues a session window
+- waits for its configured delay
+- builds a prompt from instructions, recent conversation, peers, and coordination state
+- optionally calls `web_fetch`
+- emits a JSON-formatted reply containing a natural-language message plus optional coordination updates
+- stores the reply locally and dispatches it to selected peers
 
-Each bot also maintains a coordination ledger so it can keep track of who owns which task and what has already been reported or completed.
-
-Each bot is told explicitly:
-
-- Its own bot name.
-- Its own public URL.
-- Its creation time and configured delay.
-- That it is a persistent agent backed by a Cloudflare Durable Object.
-- The high-level architecture of the network it is participating in.
-- The current coordination ledger for the run.
+Per-bot brain execution is serialized. If a newer substantive message lands while an older turn is still running, the older reply is dropped as stale before dispatch.
 
 ### Coordination protocol
 
-Bots now coordinate with a small structured protocol carried alongside normal messages.
-
-The reply schema supports:
+Bots can attach structured task updates:
 
 ```json
 {
-  "message": "short human-readable update",
-  "recipients": ["B", "C"],
+  "message": "short update",
+  "recipients": ["B"],
   "coordination": [
     {
       "type": "claim",
-      "taskId": "a-test-endpoints",
-      "owner": "A",
-      "summary": "test the other worker endpoints"
+      "taskId": "collect-primary-source-links",
+      "owner": "B",
+      "summary": "Gather direct source URLs for each cited stat"
     }
   ]
 }
@@ -130,45 +110,44 @@ Supported `coordination.type` values:
 - `report`
 - `complete`
 
-If a sender does not use the structured format, the runtime also heuristically turns plain-text commitments such as `I'm going to test your other endpoints` or `I'll search the web for durable object docs` into task claims.
+Runtime handling:
 
-### 4. Tool use
+- `claim` marks a task `in_progress`
+- `request` marks a task `blocked`
+- `report` updates the task summary without forcing completion
+- `complete` marks a task `done`
 
-Bots can call one built-in tool:
+If a sender does not include structured coordination, the runtime can still infer simple task claims from plain text such as "I'll check the docs" or "I'm going to verify that stat".
 
-- `web_fetch({ url })`
+### Sessions and guardrails
 
-This tool:
+Bots do not run indefinitely. By default, a session lasts 120 seconds from the first non-presence message in that session.
 
-- Allows only `http` and `https`.
-- Blocks localhost and private/local network targets.
-- Fetches only text-like content.
-- Truncates large responses before returning them to the model.
+The runtime also enforces:
 
-### 5. Conversation lifetime
+- a minimum cooldown between local LLM replies
+- a maximum number of replies per session
+- temporary backoff after upstream rate-limit errors
+- duplicate outbound suppression for recent messages
 
-Bots do not run forever.
+### Event logging
 
-Each bot session now runs until an explicit kill time is reached. By default, a session lasts 120 seconds from the first non-presence work item in that session. During that window, bots keep coordinating with each other. Once the kill time is reached, the session stops; a later non-presence message starts a fresh session with a new kill time.
+The worker exposes a recent event stream as NDJSON and an HTML timeline. Events are persisted in a dedicated Durable Object (`EventLogDurableObject`) with a bounded buffer intended for development and inspection, not durable production analytics.
 
-## Current Constraints
+### Scenario mode
 
-These are worth stating explicitly before open-sourcing:
+[`game.json`](./game.json) enables an optional scenario/evaluation mode. In the default repository state, it is configured for a distributed-research demo and logs a structured outcome event when a run ends.
 
-- The system uses one Durable Object class with many instances, not multiple worker types or a dynamic execution graph.
-- Peer-to-peer messaging is routed back through the worker's HTTP API, not purely through direct Durable Object RPC.
-- There is no durable queue, scheduler, planner, retry policy, or job orchestration layer.
-- Event logs are kept in-memory in the worker process and are intended for development/inspection, not durable production observability.
-- The bot model is currently `gpt-4.1`.
-- The project assumes an OpenAI-compatible API key via `OPENAI_API_KEY`, unless a bot supplies its own `llmApiKey`.
+If you do not want this behavior, disable or replace the contents of [`game.json`](./game.json).
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+.
-- An OpenAI API key.
-- Cloudflare account and Wrangler for deployment.
+- Node.js 18+
+- a Cloudflare account
+- Wrangler
+- an OpenAI-compatible API key
 
 ### Install
 
@@ -178,62 +157,79 @@ npm install
 
 ### Local development
 
-Set your API key in `.dev.vars`:
+Create `.dev.vars` from the checked-in example:
 
 ```bash
-OPENAI_API_KEY=your_key_here
+cp .dev.vars.example .dev.vars
 ```
 
-Then run:
+Then edit `.dev.vars` and add your API key.
+
+Start the worker locally:
 
 ```bash
 npm run dev
 ```
 
-The default local worker URL is:
+Default local URL:
 
 ```text
 http://localhost:8787
 ```
 
-If you need Durable Object local persistence with Wrangler's local state directory:
+If you want local Durable Object persistence:
 
 ```bash
 npm run deploy:local
 ```
 
+## Environment Variables
+
+Worker/runtime variables:
+
+- `OPENAI_API_KEY`: shared model API key.
+- `BOT_DEPLOY_TARGETS`: JSON array of active bot names. Defaults to `[]` in Wrangler config.
+- `DISABLE_AUTO_DEPLOY`: set to `true` to disable first-read bot initialization.
+- `DISABLE_AUTO_ANNOUNCE`: set to `true` to suppress `"I'm here"` fanout during explicit deploys.
+- `SESSION_KILL_AFTER_SECONDS`: session duration. Default `120`.
+- `BRAIN_COOLDOWN_SECONDS`: minimum delay between local LLM replies. Default `4`.
+- `MAX_SESSION_REPLIES`: maximum LLM replies per session. Default `6`.
+- `RESERVED_FINAL_REPLIES`: replies reserved for late-session coordination. Default `1`.
+- `RATE_LIMIT_BACKOFF_SECONDS`: cooldown after upstream rate-limit pressure. Default `15`.
+- `RUN_ID`: optional label used by archive tooling and scenario evaluation.
+
+Script-only variables:
+
+- `BOT_HEALTHCHECK_URL`: base URL used by helper scripts when `--url` is omitted.
+
 ## HTTP API
 
 ### `GET /bots`
 
-Lists active bot definitions with API keys redacted.
+List active bot definitions with API keys redacted.
 
 ### `POST /bots/:name/deploy`
 
-Deploys or refreshes one bot's stored state.
+Deploy or refresh one bot's stored state.
 
 Effects:
 
-- Persists bot metadata.
-- Stores the current peer roster.
-- Seeds initial history if needed.
-- Announces presence to peer bots.
+- persists bot metadata
+- stores the current peer roster
+- seeds initial history if needed
+- announces presence to peer bots
 
 ### `GET /bots/:name`
 
-Returns one bot profile. If the bot has not been deployed yet, the worker deploys it on demand.
+Return one bot profile. If the bot has not been initialized yet, the worker initializes it on demand.
 
 ### `GET /bots/:name/health`
 
-Runs a healthcheck against the bot Durable Object and returns:
-
-- status
-- known bot count
-- message history
+Run a healthcheck against the bot Durable Object.
 
 ### `POST /bots/:name/message`
 
-Sends a message from one bot to another:
+Send a message from one bot to another:
 
 ```json
 {
@@ -246,54 +242,44 @@ The sender bot is the `:name` path segment.
 
 ### `POST /bots/:name/reset`
 
-Clears one bot's Durable Object state.
+Clear one bot's Durable Object state.
 
 ### `POST /bots/reset`
 
-Clears all active bot Durable Object state and resets the in-memory event log.
+Clear all active bot state and reset the event log.
 
 ### `GET /bots/events`
 
-Returns the recent event stream as NDJSON.
+Return the recent event stream as NDJSON.
 
 ### `GET /bots/events/timeline`
 
-Returns a simple HTML timeline view of recent events.
+Return a simple HTML timeline for the recent event stream.
 
 ### `POST /bots/events/reset`
 
-Clears the in-memory event log buffer.
+Clear the event log.
 
 ## Deployment
 
-The recommended deployment path uses the helper script:
+Deploy all configured bots:
 
 ```bash
 npm run deploy:bots -- --url https://<your-worker-subdomain>
 ```
 
-To deploy a subset:
+Deploy a subset:
 
 ```bash
 npm run deploy:bots -- --bot A --bot B --url https://<your-worker-subdomain>
 ```
 
-What the script does:
+What `deploy:bots` does:
 
-- Validates requested bot names.
-- Deploys the worker with `BOT_DEPLOY_TARGETS` set to the selected bot list.
-- Calls each bot's `/deploy` endpoint.
-- Polls `/health` until each selected bot responds.
-
-Environment variables used during deployment/runtime:
-
-- `OPENAI_API_KEY`: Shared LLM key.
-- `BOT_DEPLOY_TARGETS`: JSON array of active bot names.
-- `BOT_HEALTHCHECK_URL`: Base URL used by scripts if `--url` is omitted.
-- `DISABLE_AUTO_DEPLOY`: Set to `true` to stop first-request auto deployment.
-- `DISABLE_AUTO_ANNOUNCE`: Set to `true` to suppress `"I'm here"` fanout during deploys.
-- `SESSION_KILL_AFTER_SECONDS`: Absolute session duration for coordinated work. Defaults to `120`.
-- `RUN_ID`: Optional label used by archive tooling and event snapshots.
+- validates requested bot names
+- deploys the worker with `BOT_DEPLOY_TARGETS` set to the selected list
+- calls each bot's `/deploy` endpoint
+- polls `/health` until each selected bot responds
 
 ## Archiving Runs
 
@@ -315,7 +301,7 @@ Run local dev and auto-archive together:
 npm run dev:archive -- --run my-run-id --url http://localhost:8787
 ```
 
-Artifacts are written under [`runs/`](./runs).
+Generated artifacts are written under `runs/`. The repository now ignores that directory by default.
 
 ## Resetting Durable Objects
 
@@ -325,9 +311,9 @@ To delete all bot Durable Objects and recreate a fresh namespace:
 npm run kill:bots
 ```
 
-This is destructive. Existing bot state and history will be removed.
+This is destructive.
 
-For local test runs, a lighter-weight reset is usually enough:
+For local testing, a lighter reset is usually enough:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/bots/reset
@@ -336,20 +322,18 @@ curl -X POST http://127.0.0.1:8787/bots/events/reset
 
 ## Open Source Notes
 
-Before publishing, you may want to review:
+Before publishing a public fork, review:
 
-- `package.json` is currently marked `"private": true`.
-- Example prompts in `bots.json` are task-specific; replace them if you want a more neutral public default.
-- Generated artifacts under `runs/` may not belong in a public repository unless you want them as examples.
-- You should avoid committing real API keys, deployment URLs, or production run data.
+- prompts in [`bots.json`](./bots.json)
+- scenario configuration in [`game.json`](./game.json)
+- Cloudflare account bindings and deployment names in [`wrangler.jsonc`](./wrangler.jsonc)
 
-## Roadmap Gaps
+Do not commit real API keys, private deployment URLs, or archived production runs.
 
-If the long-term goal is "an arbitrary number of durable worker agents executing as a network," the next missing pieces are likely:
+## Limitations
 
-- A first-class task or workflow abstraction instead of raw message passing.
-- Durable queues and retries.
-- Better routing and coordination primitives than prompt-only recipient selection.
-- Direct Durable Object RPC for inter-agent messaging.
-- Durable observability and run state beyond the in-memory event buffer.
-- Longer-lived execution semantics than the current 20-second conversation window.
+- single worker, single Durable Object class for bots
+- peer-to-peer messaging goes through HTTP endpoints, not direct Durable Object RPC
+- no durable queue, scheduler, or retry system for unfinished work
+- event logs are for inspection, not production-grade observability
+- prompts still do a large share of coordination work

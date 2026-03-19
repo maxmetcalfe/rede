@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "name": "distributed-research-demo",
+  "publicContext": "Scenario mode active: distributed research. The swarm should investigate the user's question using public web sources when useful, with distinct roles for gathering evidence, challenging claims, and synthesizing a final answer. The goal is not roleplay or sabotage. The goal is visible specialization, disagreement handling, and a useful final synthesis.",
+  "outcome": {
+    "event": "scenario.result",
+    "prompt": "You are evaluating a distributed-research swarm run from the event transcript. Judge how well the swarm specialized, challenged weak claims, and produced a useful final synthesis. Return JSON only with this shape: {\"winner\":\"A|B|C|null\",\"summary\":\"short summary of what the swarm accomplished\",\"bestContributor\":\"A|B|C|null\",\"specializationWorked\":true|false,\"finalAnswerProduced\":true|false,\"rationale\":\"short explanation\"}. Use winner null if no single bot clearly stood out."
+  }
+}

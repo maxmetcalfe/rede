@@ -2,7 +2,14 @@ import { DurableObject } from "cloudflare:workers";
 import { generateText, jsonSchema, stepCountIs, tool } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import botDefinitions from "../bots.json";
-import { logEvent } from "./logger";
+import gameConfigRaw from "../game.json";
+import {
+	configureEventLogSink,
+	createDurableEventLogSink,
+	getDurableEventLog,
+	getEventLog,
+	logEvent,
+} from "./logger";
 
 export type BotDefinition = {
   name: string;
@@ -13,6 +20,16 @@ export type BotDefinition = {
    * Number of seconds the bot should wait before acting.
    */
   speed?: number;
+};
+
+export type GameConfig = {
+  enabled?: boolean;
+  name?: string;
+  publicContext?: string;
+  outcome?: {
+    event?: string;
+    prompt: string;
+  };
 };
 
 export type BotPeer = {
@@ -39,7 +56,12 @@ export type CoordinationUpdateType =
   | "report"
   | "complete";
 
-export type CoordinationStatus = "open" | "in_progress" | "done";
+export type CoordinationStatus =
+  | "open"
+  | "in_progress"
+  | "blocked"
+  | "done"
+  | "abandoned";
 
 export type CoordinationUpdate = {
   type: CoordinationUpdateType;
@@ -74,6 +96,36 @@ export type StoredBot = BotDefinition & {
    * Flag set once the conversation window has expired. Prevents duplicate stop notifications.
    */
   sessionStopped?: boolean;
+  /**
+   * Bot designated to receive default status updates for the run.
+   */
+  coordinator?: string;
+  /**
+   * Number of local LLM replies emitted in the current session.
+   */
+  sessionReplyCount?: number;
+  /**
+   * Timestamp of the last local LLM reply.
+   */
+  lastBrainAt?: string;
+  /**
+   * Timestamp until which the bot should suppress new model calls after rate limits.
+   */
+  backoffUntil?: string;
+  /**
+   * Recent outbound fingerprints keyed by recipient to suppress duplicate sends.
+   */
+  recentOutbound?: OutboundFingerprint[];
+  /**
+   * Session marker for whether a game outcome has already been emitted.
+   */
+  gameOutcomeLoggedAt?: string;
+};
+
+export type OutboundFingerprint = {
+  recipient: string;
+  fingerprint: string;
+  sentAt: string;
 };
 
 export type BotDeploymentPayload = {
@@ -86,10 +138,16 @@ export const BOT_STORAGE_KEY = "bot";
 const BRAIN_HISTORY_LIMIT = 10;
 const BRAIN_MODEL = "gpt-4.1";
 const DEFAULT_SESSION_KILL_AFTER_MS = 120_000;
+const DEFAULT_BRAIN_COOLDOWN_MS = 4_000;
+const DEFAULT_MAX_SESSION_REPLIES = 6;
+const DEFAULT_RESERVED_FINAL_REPLIES = 1;
+const DEFAULT_RATE_LIMIT_BACKOFF_MS = 15_000;
 const WEB_FETCH_TIMEOUT_MS = 10_000;
 const WEB_FETCH_MAX_CHARS = 20_000;
 const PRESENCE_MESSAGE_CONTENT = "I'm here";
 const COORDINATION_PREFIX = "COORDINATION_JSON:";
+const OUTBOUND_DEDUPE_WINDOW_MS = 30_000;
+const GAME_CONFIG: GameConfig = gameConfigRaw as GameConfig;
 
 export const jsonResponse = <T>(body: T, init?: ResponseInit) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -174,11 +232,13 @@ export class BotDurableObject extends DurableObject<Env> {
   protected readonly ctx: DurableObjectState<{}>;
   protected readonly env: Env;
   private bot?: StoredBot;
+  private brainQueue: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState<{}>, env: Env) {
     super(ctx, env);
     this.ctx = ctx;
     this.env = env;
+    configureEventLogSink(createDurableEventLogSink(env));
   }
 
   private async loadBot(): Promise<StoredBot | undefined> {
@@ -191,6 +251,7 @@ export class BotDurableObject extends DurableObject<Env> {
   async deploy(payload: BotDeploymentPayload): Promise<StoredBot> {
     const { bot: botDefinition, peers } = payload;
     const persisted = await this.loadBot();
+    const coordinator = this.selectCoordinator(peers, botDefinition.name);
     const createdAt =
       persisted?.createdAt ??
       botDefinition.createdAt ??
@@ -208,6 +269,12 @@ export class BotDurableObject extends DurableObject<Env> {
       sessionStartedAt: persisted?.sessionStartedAt,
       sessionKillAt: persisted?.sessionKillAt,
       sessionStopped: persisted?.sessionStopped,
+      coordinator: persisted?.coordinator ?? coordinator,
+      sessionReplyCount: persisted?.sessionReplyCount ?? 0,
+      lastBrainAt: persisted?.lastBrainAt,
+      backoffUntil: persisted?.backoffUntil,
+      recentOutbound: this.pruneRecentOutbound(persisted?.recentOutbound),
+      gameOutcomeLoggedAt: persisted?.gameOutcomeLoggedAt,
     };
     await this.ctx.storage.put(BOT_STORAGE_KEY, bot);
     this.bot = bot;
@@ -236,6 +303,8 @@ export class BotDurableObject extends DurableObject<Env> {
       ? bot.coordination
       : [];
     const sessionKillAt = bot.sessionKillAt;
+    const coordinator =
+      bot.coordinator ?? this.selectCoordinator(knownBots, bot.name);
     if (!bot.messages || bot.messages.length === 0) {
       updated = true;
     }
@@ -249,6 +318,12 @@ export class BotDurableObject extends DurableObject<Env> {
         messages,
         coordination,
         sessionKillAt,
+        coordinator,
+        sessionReplyCount: bot.sessionReplyCount ?? 0,
+        lastBrainAt: bot.lastBrainAt,
+        backoffUntil: bot.backoffUntil,
+        recentOutbound: this.pruneRecentOutbound(bot.recentOutbound),
+        gameOutcomeLoggedAt: bot.gameOutcomeLoggedAt,
       };
       await this.ctx.storage.put(BOT_STORAGE_KEY, normalized);
       this.bot = normalized;
@@ -337,10 +412,36 @@ export class BotDurableObject extends DurableObject<Env> {
       sessionStartedAt,
       sessionKillAt,
       sessionStopped: shouldStartNewSession ? false : bot.sessionStopped,
+      sessionReplyCount: shouldStartNewSession ? 0 : bot.sessionReplyCount ?? 0,
+      backoffUntil:
+        shouldStartNewSession && !isPresenceMessage ? undefined : bot.backoffUntil,
+      recentOutbound: this.pruneRecentOutbound(
+        shouldStartNewSession && !isPresenceMessage ? [] : bot.recentOutbound,
+      ),
+      gameOutcomeLoggedAt: shouldStartNewSession ? undefined : bot.gameOutcomeLoggedAt,
       messages: [...bot.messages, entry],
     };
     await this.ctx.storage.put(BOT_STORAGE_KEY, updated);
     this.bot = updated;
+    if (shouldStartNewSession) {
+      logEvent("conversation.start", {
+        bot: updated.name,
+        runId: this.env.RUN_ID,
+        startedAt: updated.sessionStartedAt,
+        killAt: updated.sessionKillAt,
+        triggerFrom: message.botId,
+        initialMessageLength: message.content.length,
+      });
+    } else if (!isPresenceMessage && updated.sessionStartedAt) {
+      logEvent("conversation.activity", {
+        bot: updated.name,
+        runId: this.env.RUN_ID,
+        startedAt: updated.sessionStartedAt,
+        triggerFrom: message.botId,
+        messageCount: updated.messages.length,
+        coordinationCount: updated.coordination.length,
+      });
+    }
     if (shouldStartNewSession && updated.sessionStartedAt && updated.sessionKillAt) {
       this.scheduleConversationStop(updated.sessionStartedAt, updated.sessionKillAt);
     }
@@ -367,18 +468,30 @@ export class BotDurableObject extends DurableObject<Env> {
       });
       return updated;
     }
-    this.ctx.waitUntil(
-      this.runBotBrain(updated, message).catch((error) => {
-        logEvent("brain.error", {
-          bot: updated.name,
-          error:
-            error instanceof Error
-              ? error.message
-              : String(error ?? "unknown error"),
-        });
-      }),
-    );
+    if (!this.shouldBotRespond(updated, message)) {
+      return updated;
+    }
+    this.ctx.waitUntil(this.enqueueBrainRun(updated, message));
     return updated;
+  }
+
+  private enqueueBrainRun(
+    bot: StoredBot,
+    trigger: BotMessageInput,
+  ): Promise<void> {
+    const run = this.brainQueue
+      .catch(() => {})
+      .then(() => this.runBotBrain(bot, trigger));
+    this.brainQueue = run.catch(() => {});
+    return run.catch((error) => {
+      logEvent("brain.error", {
+        bot: bot.name,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error ?? "unknown error"),
+      });
+    });
   }
 
   private isPresenceMessage(content: string): boolean {
@@ -524,28 +637,59 @@ export class BotDurableObject extends DurableObject<Env> {
       this.logConversationExpired(current);
       return;
     }
-    const apiKey = this.resolveApiKey(bot);
+    current = await this.refreshBotState(current);
+    if (this.isBackoffActive(current)) {
+      logEvent("brain.skip", {
+        bot: current.name,
+        reason: "rate-limit-backoff",
+        backoffUntil: current.backoffUntil,
+      });
+      return;
+    }
+    if (this.hasExceededSessionReplyBudget(current, trigger)) {
+      logEvent("brain.skip", {
+        bot: current.name,
+        reason: "session-reply-budget",
+        sessionReplyCount: current.sessionReplyCount ?? 0,
+        maxReplies: this.getMaxSessionReplies(),
+        reservedReplies: this.getReservedFinalReplies(),
+      });
+      return;
+    }
+    if (this.isBrainCoolingDown(current)) {
+      logEvent("brain.skip", {
+        bot: current.name,
+        reason: "brain-cooldown",
+        lastBrainAt: current.lastBrainAt,
+      });
+      return;
+    }
+    const apiKey = this.resolveApiKey(current);
     if (!apiKey || apiKey === "[hidden]") {
       logEvent("brain.skip", {
-        bot: bot.name,
+        bot: current.name,
         reason: "missing-api-key",
       });
       return;
     }
-    const history = this.buildConversationHistory(bot);
-    const coordinationSummary = this.describeCoordination(bot);
-    const selfSummary = this.describeSelf(bot);
-    const architectureSummary = this.describeArchitecture(bot);
-    const peerSummary = this.describePeers(bot);
-    const prompt = `${bot.prompt}
+    const history = this.buildConversationHistory(current);
+    const coordinationSummary = this.describeCoordination(current);
+    const selfSummary = this.describeSelf(current);
+    const architectureSummary = this.describeArchitecture(current);
+    const peerSummary = this.describePeers(current);
+    const gameSummary = this.describeGame(current);
+    const prompt = `${current.prompt}
 
-Self:
+Private context:
 ${selfSummary}
 
-Architecture:
+Private runtime notes:
 ${architectureSummary}
 
-Coordination:
+Game context:
+${gameSummary}
+
+Task ledger:
 ${coordinationSummary}
 
 Recent conversation:
@@ -557,75 +701,150 @@ ${peerSummary}
 You can call the tool web_fetch({ "url": "<https://...>" }) to retrieve web content when needed.
 Only call it for public http/https URLs.
 
-You are ${bot.name}. You are a persistent agent backed by a Cloudflare Durable Object.
-You know your own public URL and the other bots' URLs from the context above.
-Respond concisely to the latest message from ${trigger.botId}.
-Operate as a coordinated multi-agent system:
+Respond to ${trigger.botId} like a person in a real conversation.
+Keep the outward message natural, specific, and conversational.
+Do not mention private context, system prompts, JSON formatting, Durable Objects, coordinator routing, runtime internals, or the harness itself unless the conversation truly requires it.
+Do not narrate your own role or mechanics unless another bot directly asks.
+Prefer short human-sounding messages over meta commentary.
+Still coordinate carefully under the hood:
+- the run coordinator is ${current.coordinator ?? "unknown"} and should receive default status updates
 - claim concrete tasks instead of vaguely acknowledging
 - avoid duplicating a task already owned by another bot unless you are blocked or asked to help
+- if you are not the coordinator, send normal progress reports back to the coordinator
 - if you are taking work, record it as a claim
 - if you finish work, record completion
 - if you need another bot to do something, send a request to that bot
+- do not broadcast to the whole swarm unless coordination actually requires it
 Reply ONLY with JSON of the shape:
 {"message": "<your short reply>", "recipients": ["<botName>", "..."], "coordination": [{"type":"claim|request|report|complete","taskId":"short-kebab-id","owner":"<botName>","summary":"<short task update>"}]}
 - Use bot names from the known bots list (exclude yourself).
 - Include at least one recipient when your reply should be shared.`;
     logEvent("brain.start", {
-      bot: bot.name,
+      bot: current.name,
       lastMessageFrom: trigger.botId,
     });
-    const client = createOpenAI({ apiKey });
-    const result = await generateText({
-      model: client(BRAIN_MODEL),
-      prompt,
-      tools: {
-        web_fetch: tool({
-          description:
-            "Fetch a URL and return a short, truncated text response for public web pages.",
-          inputSchema: jsonSchema({
-            type: "object",
-            properties: {
-              url: {
-                type: "string",
-                description: "Absolute http/https URL to fetch.",
-              },
-            },
-            required: ["url"],
-            additionalProperties: false,
-          }),
-          execute: async ({ url }) => this.performWebFetch(url, bot.name),
-        }),
-      },
-      toolChoice: "auto",
-      stopWhen: stepCountIs(3),
+    logEvent("llm.request", {
+      bot: current.name,
+      model: BRAIN_MODEL,
+      lastMessageFrom: trigger.botId,
+      promptChars: prompt.length,
+      historyMessages: current.messages.length,
+      coordinationCount: current.coordination.length,
     });
+    const client = createOpenAI({ apiKey });
+    let result;
+    try {
+      result = await generateText({
+        model: client(BRAIN_MODEL),
+        prompt,
+        tools: {
+          web_fetch: tool({
+            description:
+              "Fetch a URL and return a short, truncated text response for public web pages.",
+            inputSchema: jsonSchema({
+              type: "object",
+              properties: {
+                url: {
+                  type: "string",
+                  description: "Absolute http/https URL to fetch.",
+                },
+              },
+              required: ["url"],
+              additionalProperties: false,
+            }),
+            execute: async ({ url }) => this.performWebFetch(url, current.name),
+          }),
+        },
+        toolChoice: "auto",
+        stopWhen: stepCountIs(3),
+      });
+    } catch (error) {
+      if (this.isRateLimitError(error)) {
+        await this.setBackoffUntil(
+          current,
+          new Date(Date.now() + this.getRateLimitBackoffMs()).toISOString(),
+        );
+        logEvent("brain.skip", {
+          bot: current.name,
+          reason: "rate-limit-error",
+          backoffSeconds: this.getRateLimitBackoffMs() / 1000,
+        });
+        return;
+      }
+      throw error;
+    }
+    logEvent("llm.response", {
+      bot: current.name,
+      model: BRAIN_MODEL,
+      finishReason: result.finishReason,
+      textChars: result.text?.length ?? 0,
+      toolCalls: result.toolCalls?.length ?? 0,
+      toolResults: result.toolResults?.length ?? 0,
+      steps: result.steps?.length ?? 0,
+    });
+    current = await this.refreshBotState(current);
+    if (this.hasConversationExpired(current)) {
+      current = await this.markConversationStopped(current);
+      this.logConversationExpired(current);
+      return;
+    }
+    if (this.isTriggerSuperseded(current, trigger)) {
+      logEvent("brain.skip", {
+        bot: current.name,
+        reason: "superseded-trigger",
+        triggerFrom: trigger.botId,
+        triggerTimestamp: trigger.timestamp,
+      });
+      return;
+    }
     const reply = result.text?.trim();
     if (!reply) {
-      logEvent("brain.skip", { bot: bot.name, reason: "empty-reply" });
+      logEvent("brain.skip", { bot: current.name, reason: "empty-reply" });
       return;
     }
     const { message, recipients, coordination } = this.parseBrainResponse(
       reply,
-      bot,
+      current,
       trigger.botId,
     );
     if (!message) {
-      logEvent("brain.skip", { bot: bot.name, reason: "unparsable-reply" });
+      logEvent("brain.skip", { bot: current.name, reason: "unparsable-reply" });
       return;
     }
-    const content = this.formatOutgoingMessage(message, coordination);
+    const filteredCoordination = this.filterOutgoingCoordination(
+      current,
+      coordination,
+    );
+    const normalizedRecipients = this.normalizeRecipients(
+      current,
+      recipients,
+      trigger.botId,
+      filteredCoordination,
+    );
+    const content = this.formatOutgoingMessage(message, filteredCoordination);
     const updated = await this.appendMessage({
-      botId: bot.name,
+      botId: current.name,
       content,
     });
+    const withBrainMetadata = await this.recordBrainReply(
+      updated,
+      trigger,
+      filteredCoordination,
+      normalizedRecipients,
+    );
     logEvent("brain.reply", {
-      bot: bot.name,
+      bot: current.name,
       content: message,
       length: message.length,
-      recipients,
-      coordination,
+      recipients: normalizedRecipients,
+      coordination: filteredCoordination,
     });
-    await this.dispatchMessageActions(updated, content, recipients);
+    await this.dispatchMessageActions(
+      withBrainMetadata,
+      content,
+      normalizedRecipients,
+      filteredCoordination,
+    );
   }
 
   private async markConversationStopped(bot: StoredBot): Promise<StoredBot> {
@@ -644,7 +863,39 @@ Reply ONLY with JSON of the shape:
       startedAt: bot.sessionStartedAt,
       killAt: bot.sessionKillAt,
       ttlSeconds: this.getSessionTtlSeconds(bot),
+      messageCount: bot.messages.length,
+      coordinationCount: bot.coordination.length,
+      replyCount: bot.sessionReplyCount ?? 0,
     });
+    if (
+      bot.name === bot.coordinator &&
+      bot.sessionStartedAt &&
+      bot.gameOutcomeLoggedAt !== bot.sessionStartedAt
+    ) {
+      const withOutcomeMarker: StoredBot = {
+        ...stopped,
+        gameOutcomeLoggedAt: bot.sessionStartedAt,
+      };
+      await this.ctx.storage.put(BOT_STORAGE_KEY, withOutcomeMarker);
+      this.bot = withOutcomeMarker;
+      logEvent("game.outcome.start", {
+        bot: bot.name,
+        runId: this.env.RUN_ID,
+        game: GAME_CONFIG.name ?? "unnamed-game",
+        event: GAME_CONFIG.outcome?.event ?? "game.outcome",
+      });
+      this.ctx.waitUntil(
+        this.evaluateGameOutcome(withOutcomeMarker).catch((error) => {
+          logEvent("game.outcome.error", {
+            bot: bot.name,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error ?? "unknown error"),
+          });
+        }),
+      );
+    }
     return stopped;
   }
 
@@ -772,24 +1023,37 @@ Reply ONLY with JSON of the shape:
     return [
       `name: ${bot.name}`,
       `url: ${selfPeer?.botUrl ?? "unknown"}`,
+      `coordinator: ${bot.coordinator ?? "unknown"}`,
       `createdAt: ${bot.createdAt}`,
       `speedSeconds: ${Number(bot.speed ?? 0)}`,
       `conversationWindowSeconds: ${this.getSessionKillAfterMs() / 1000}`,
       `sessionKillAt: ${bot.sessionKillAt ?? "unknown"}`,
+      `sessionReplyCount: ${bot.sessionReplyCount ?? 0}/${this.getMaxSessionReplies()}`,
+      `backoffUntil: ${bot.backoffUntil ?? "none"}`,
     ].join("\n");
   }
 
   private describeArchitecture(bot: StoredBot): string {
     const peerCount = Math.max((bot.knownBots?.length ?? 1) - 1, 0);
     return [
-      "runtime: Cloudflare Workers + Durable Objects",
-      "topology: one BotDurableObject class with many named instances",
-      "execution: message-driven LLM agent",
-      "state: prompt, peer list, message history, conversation window",
-      "messaging: bots exchange messages via worker endpoints",
-      "brain: OpenAI model via Vercel AI SDK",
-      "tools: web_fetch for public web pages",
+      "message-driven multi-bot conversation",
+      "keep continuity with recent history and task ledger",
+      "use the coordinator for default status flow",
+      "speak naturally unless explicit system detail is needed",
+      "web_fetch is available for public web pages",
       `knownPeerCount: ${peerCount}`,
+    ].join("\n");
+  }
+
+  private describeGame(bot: StoredBot): string {
+    if (!GAME_CONFIG.enabled) {
+      return "No game mode configured.";
+    }
+    return [
+      `name: ${GAME_CONFIG.name ?? "unnamed-game"}`,
+      GAME_CONFIG.publicContext ?? "No shared game context provided.",
+      `you must still follow your private role instructions from your prompt`,
+      `coordinator for this run: ${bot.coordinator ?? "unknown"}`,
     ].join("\n");
   }
 
@@ -856,18 +1120,26 @@ Reply ONLY with JSON of the shape:
       );
       return {
         message: parsed.message.trim(),
-        recipients: filtered.length > 0 ? filtered : [fallbackRecipient],
+        recipients: this.normalizeRecipients(
+          bot,
+          filtered,
+          fallbackRecipient,
+          coordination,
+        ),
         coordination,
       };
     }
     const fallbackMessage = raw.trim();
+    const coordination = this.inferCoordinationUpdates(bot.name, fallbackMessage);
     return {
       message: fallbackMessage,
-      recipients:
-        peerNames.has(fallbackRecipient) && fallbackRecipient !== bot.name
-          ? [fallbackRecipient]
-          : peers.map((peer) => peer.name).filter((name) => name !== bot.name),
-      coordination: this.inferCoordinationUpdates(bot.name, fallbackMessage),
+      recipients: this.normalizeRecipients(
+        bot,
+        [],
+        fallbackRecipient,
+        coordination,
+      ),
+      coordination,
     };
   }
 
@@ -883,6 +1155,64 @@ Reply ONLY with JSON of the shape:
     } catch {
       return null;
     }
+  }
+
+  private async evaluateGameOutcome(bot: StoredBot): Promise<void> {
+    if (!GAME_CONFIG.enabled || !GAME_CONFIG.outcome?.prompt) {
+      return;
+    }
+    const apiKey = this.resolveApiKey(bot);
+    if (!apiKey || apiKey === "[hidden]") {
+      logEvent("game.outcome.skip", {
+        bot: bot.name,
+        reason: "missing-api-key",
+      });
+      return;
+    }
+    const transcriptEntries = await getDurableEventLog(this.env).catch(() => getEventLog());
+    const transcript = transcriptEntries
+      .map((entry) => JSON.stringify(entry))
+      .join("\n");
+    logEvent("game.outcome.transcript", {
+      bot: bot.name,
+      runId: this.env.RUN_ID,
+      entries: transcriptEntries.length,
+      chars: transcript.length,
+    });
+    const client = createOpenAI({ apiKey });
+    const result = await generateText({
+      model: client(BRAIN_MODEL),
+      prompt: `${GAME_CONFIG.outcome.prompt}
+
+Run metadata:
+- runId: ${this.env.RUN_ID ?? "unknown"}
+- game: ${GAME_CONFIG.name ?? "unnamed-game"}
+- coordinator: ${bot.coordinator ?? "unknown"}
+
+Transcript:
+${transcript}`,
+      stopWhen: stepCountIs(1),
+    });
+    logEvent("game.outcome.response", {
+      bot: bot.name,
+      runId: this.env.RUN_ID,
+      finishReason: result.finishReason,
+      textChars: result.text?.length ?? 0,
+      steps: result.steps?.length ?? 0,
+    });
+    const parsed = this.extractJson(result.text ?? "");
+    if (!parsed) {
+      logEvent("game.outcome.error", {
+        bot: bot.name,
+        error: "Unable to parse game outcome JSON.",
+      });
+      return;
+    }
+    logEvent(GAME_CONFIG.outcome.event ?? "game.outcome", {
+      runId: this.env.RUN_ID,
+      game: GAME_CONFIG.name,
+      ...(parsed as Record<string, unknown>),
+    });
   }
 
   private getOriginFromKnownBots(peers: BotPeer[]): string | undefined {
@@ -1000,7 +1330,11 @@ Reply ONLY with JSON of the shape:
     const byId = new Map(existing.map((item) => [item.taskId, item]));
     for (const update of updates) {
       const current = byId.get(update.taskId);
-      const owner = update.owner?.trim() || current?.owner || updatedBy;
+      const owner = this.resolveCoordinationOwner(
+        current,
+        update,
+        updatedBy,
+      );
       const status = this.statusForUpdate(update.type, current?.status);
       byId.set(update.taskId, {
         taskId: update.taskId,
@@ -1016,6 +1350,83 @@ Reply ONLY with JSON of the shape:
     );
   }
 
+  private resolveCoordinationOwner(
+    current: CoordinationItem | undefined,
+    update: CoordinationUpdate,
+    updatedBy: string,
+  ): string {
+    const proposedOwner = update.owner?.trim() || updatedBy;
+    if (!current?.owner) {
+      return proposedOwner;
+    }
+    if (current.owner === proposedOwner) {
+      return current.owner;
+    }
+    if (current.status === "done" || current.status === "abandoned") {
+      return proposedOwner;
+    }
+    if (this.isExplicitOwnershipHandoff(current, update, updatedBy)) {
+      logEvent("coordination.owner.handoff", {
+        taskId: current.taskId,
+        from: current.owner,
+        to: proposedOwner,
+        updatedBy,
+      });
+      return proposedOwner;
+    }
+    logEvent("coordination.owner.conflict", {
+      taskId: current.taskId,
+      currentOwner: current.owner,
+      proposedOwner,
+      updatedBy,
+      status: current.status,
+      updateType: update.type,
+    });
+    return current.owner;
+  }
+
+  private isExplicitOwnershipHandoff(
+    current: CoordinationItem,
+    update: CoordinationUpdate,
+    updatedBy: string,
+  ): boolean {
+    if (updatedBy !== current.owner) {
+      return false;
+    }
+    const proposedOwner = update.owner?.trim();
+    if (!proposedOwner || proposedOwner === current.owner) {
+      return false;
+    }
+    return /\b(handoff|hand off|transfer|reassign)\b/i.test(update.summary);
+  }
+
+  private filterOutgoingCoordination(
+    bot: StoredBot,
+    updates: CoordinationUpdate[],
+  ): CoordinationUpdate[] {
+    if (updates.length === 0) {
+      return updates;
+    }
+    const existing = new Map(
+      (bot.coordination ?? []).map((item) => [item.taskId, item]),
+    );
+    return updates.filter((update) => {
+      const current = existing.get(update.taskId);
+      if (update.type === "request" && current?.status === "done") {
+        return false;
+      }
+      if (
+        current &&
+        current.owner === (update.owner?.trim() || current.owner) &&
+        current.summary === update.summary &&
+        current.status === this.statusForUpdate(update.type, current.status)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }
+
   private statusForUpdate(
     type: CoordinationUpdateType,
     previous?: CoordinationStatus,
@@ -1027,7 +1438,7 @@ Reply ONLY with JSON of the shape:
       return "in_progress";
     }
     if (type === "request") {
-      return previous === "done" ? "done" : "open";
+      return previous === "done" ? "done" : "blocked";
     }
     return previous ?? "in_progress";
   }
@@ -1076,12 +1487,21 @@ Reply ONLY with JSON of the shape:
     bot: StoredBot,
     content: string,
     recipients: string[],
+    coordination: CoordinationUpdate[],
   ): Promise<void> {
     const peers = (bot.knownBots ?? []).filter(
       (peer) => peer.name !== bot.name,
     );
-    const targetSet = new Set(recipients);
+    const targetSet = new Set(
+      this.enforceRecipientLimits(bot, recipients, coordination),
+    );
     const targets = peers.filter((peer) => targetSet.has(peer.name));
+    logEvent("message.broadcast.plan", {
+      bot: bot.name,
+      requestedRecipients: recipients,
+      finalRecipients: targets.map((peer) => peer.name),
+      coordinationTypes: coordination.map((update) => update.type),
+    });
     if (peers.length === 0) {
       logEvent("message.broadcast.skip", { bot: bot.name, reason: "no-peers" });
       return;
@@ -1106,8 +1526,18 @@ Reply ONLY with JSON of the shape:
       `/bots/${encodeURIComponent(bot.name)}/message`,
       origin,
     );
+    const sentFingerprints: OutboundFingerprint[] = [];
     await Promise.all(
       targets.map(async (peer) => {
+        const fingerprint = this.buildOutboundFingerprint(content, coordination);
+        if (this.hasRecentOutboundFingerprint(bot, peer.name, fingerprint)) {
+          logEvent("message.broadcast.skip", {
+            bot: bot.name,
+            reason: "duplicate-outbound",
+            to: peer.name,
+          });
+          return;
+        }
         try {
           const response = await fetch(messageEndpoint, {
             method: "POST",
@@ -1127,6 +1557,11 @@ Reply ONLY with JSON of the shape:
             to: peer.name,
             content,
           });
+          sentFingerprints.push({
+            recipient: peer.name,
+            fingerprint,
+            sentAt: new Date().toISOString(),
+          });
         } catch (error) {
           logEvent("message.broadcast.error", {
             from: bot.name,
@@ -1138,6 +1573,419 @@ Reply ONLY with JSON of the shape:
           });
         }
       }),
+    );
+    if (sentFingerprints.length > 0) {
+      await this.recordOutboundFingerprints(bot, sentFingerprints);
+    }
+  }
+
+  private selectCoordinator(peers: BotPeer[], fallback: string): string {
+    const names = peers.map((peer) => peer.name).filter(Boolean).sort();
+    return names[0] ?? fallback;
+  }
+
+  private shouldBotRespond(bot: StoredBot, message: BotMessageInput): boolean {
+    const sender = message.botId.trim();
+    const peerNames = new Set((bot.knownBots ?? []).map((peer) => peer.name));
+    const isPeerSender = peerNames.has(sender);
+    const coordinator = bot.coordinator;
+    const updates = this.collectCoordinationUpdates(sender, message.content);
+    if (!isPeerSender) {
+      return true;
+    }
+    if (sender === coordinator) {
+      return true;
+    }
+    if (
+      updates.some(
+        (update) =>
+          update.type === "request" &&
+          (update.owner === bot.name || update.taskId.includes(bot.name.toLowerCase())),
+      )
+    ) {
+      return true;
+    }
+    if (
+      bot.name === coordinator &&
+      updates.some((update) => update.type === "complete" || update.type === "report")
+    ) {
+      return true;
+    }
+    if (bot.name === coordinator) {
+      return true;
+    }
+    logEvent("brain.skip", {
+      bot: bot.name,
+      reason: "peer-routing-policy",
+      from: sender,
+      coordinator,
+    });
+    return false;
+  }
+
+  private normalizeRecipients(
+    bot: StoredBot,
+    requested: string[],
+    fallbackRecipient: string,
+    coordination: CoordinationUpdate[],
+  ): string[] {
+    const peerNames = new Set(
+      (bot.knownBots ?? [])
+        .map((peer) => peer.name)
+        .filter((name) => name && name !== bot.name),
+    );
+    const requestedValid = requested.filter((name) => peerNames.has(name));
+    const requestTargets = new Set(
+      coordination
+        .filter((update) => update.type === "request")
+        .map((update) => this.inferTargetBotName(bot, update)),
+    );
+    const hasCrossBotRequest = requestTargets.size > 0;
+    if (requestedValid.length > 0) {
+      if (bot.name !== bot.coordinator && !hasCrossBotRequest) {
+        return bot.coordinator && peerNames.has(bot.coordinator)
+          ? [bot.coordinator]
+          : [requestedValid[0]];
+      }
+      if (bot.name === bot.coordinator && requestTargets.size > 0) {
+        const targeted = requestedValid.filter((name) => requestTargets.has(name));
+        if (targeted.length > 0) {
+          return targeted.slice(0, 2);
+        }
+      }
+      return requestedValid;
+    }
+    if (bot.name === bot.coordinator && requestTargets.size > 0) {
+      const targeted = Array.from(requestTargets).filter(
+        (name): name is string => typeof name === "string" && peerNames.has(name),
+      );
+      if (targeted.length > 0) {
+        return targeted.slice(0, 2);
+      }
+    }
+    if (bot.name !== bot.coordinator && bot.coordinator && peerNames.has(bot.coordinator)) {
+      return [bot.coordinator];
+    }
+    if (fallbackRecipient !== bot.name && peerNames.has(fallbackRecipient)) {
+      return [fallbackRecipient];
+    }
+    const firstPeer = Array.from(peerNames)[0];
+    return firstPeer ? [firstPeer] : [];
+  }
+
+  private enforceRecipientLimits(
+    bot: StoredBot,
+    recipients: string[],
+    coordination: CoordinationUpdate[],
+  ): string[] {
+    const unique = Array.from(new Set(recipients)).filter((name) => name !== bot.name);
+    if (unique.length <= 1) {
+      return unique;
+    }
+    const hasCrossBotRequest = coordination.some((update) => update.type === "request");
+    if (bot.name !== bot.coordinator && !hasCrossBotRequest) {
+      return unique.slice(0, 1);
+    }
+    return unique.slice(0, 2);
+  }
+
+  private async refreshBotState(bot: StoredBot): Promise<StoredBot> {
+    const latest = await this.getProfile();
+    return latest.name === bot.name ? latest : bot;
+  }
+
+  private isTriggerSuperseded(bot: StoredBot, trigger: BotMessageInput): boolean {
+    if (typeof trigger.timestamp !== "string" || trigger.timestamp.trim().length === 0) {
+      return false;
+    }
+    const triggerTimestampMs = Date.parse(trigger.timestamp);
+    if (!Number.isFinite(triggerTimestampMs)) {
+      return false;
+    }
+    return bot.messages.some((message) => {
+      if (message.botId === bot.name || this.isPresenceMessage(message.content)) {
+        return false;
+      }
+      const messageTimestampMs = Date.parse(message.timestamp);
+      if (!Number.isFinite(messageTimestampMs) || messageTimestampMs <= triggerTimestampMs) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private hasExceededSessionReplyBudget(
+    bot: StoredBot,
+    trigger: BotMessageInput,
+  ): boolean {
+    const count = bot.sessionReplyCount ?? 0;
+    const max = this.getMaxSessionReplies();
+    if (count >= max) {
+      return true;
+    }
+    const reserved = this.getReservedFinalReplies();
+    if (reserved <= 0 || count < max - reserved) {
+      return false;
+    }
+    return !this.shouldUseReservedReply(bot, trigger);
+  }
+
+  private isBrainCoolingDown(bot: StoredBot): boolean {
+    if (!bot.lastBrainAt) {
+      return false;
+    }
+    const lastBrainAtMs = Date.parse(bot.lastBrainAt);
+    if (!Number.isFinite(lastBrainAtMs)) {
+      return false;
+    }
+    return Date.now() - lastBrainAtMs < this.getBrainCooldownMs();
+  }
+
+  private isBackoffActive(bot: StoredBot): boolean {
+    if (!bot.backoffUntil) {
+      return false;
+    }
+    const backoffUntilMs = Date.parse(bot.backoffUntil);
+    return Number.isFinite(backoffUntilMs) && Date.now() < backoffUntilMs;
+  }
+
+  private async recordBrainReply(
+    bot: StoredBot,
+    trigger: BotMessageInput,
+    coordination: CoordinationUpdate[],
+    recipients: string[],
+  ): Promise<StoredBot> {
+    const countAgainstBudget = this.shouldCountReplyAgainstBudget(
+      bot,
+      trigger,
+      coordination,
+      recipients,
+    );
+    const updated: StoredBot = {
+      ...bot,
+      sessionReplyCount: countAgainstBudget
+        ? Math.min(this.getMaxSessionReplies(), (bot.sessionReplyCount ?? 0) + 1)
+        : bot.sessionReplyCount ?? 0,
+      lastBrainAt: new Date().toISOString(),
+      backoffUntil: undefined,
+      recentOutbound: this.pruneRecentOutbound(bot.recentOutbound),
+    };
+    await this.ctx.storage.put(BOT_STORAGE_KEY, updated);
+    this.bot = updated;
+    if (!countAgainstBudget) {
+      logEvent("brain.budget.exempt", {
+        bot: bot.name,
+        from: trigger.botId,
+        recipients,
+        coordinationTypes: coordination.map((update) => update.type),
+      });
+    }
+    return updated;
+  }
+
+  private async setBackoffUntil(bot: StoredBot, backoffUntil: string): Promise<void> {
+    const updated: StoredBot = {
+      ...bot,
+      backoffUntil,
+    };
+    await this.ctx.storage.put(BOT_STORAGE_KEY, updated);
+    this.bot = updated;
+  }
+
+  private getBrainCooldownMs(): number {
+    return this.readPositiveEnvMs(
+      "BRAIN_COOLDOWN_SECONDS",
+      DEFAULT_BRAIN_COOLDOWN_MS,
+    );
+  }
+
+  private getRateLimitBackoffMs(): number {
+    return this.readPositiveEnvMs(
+      "RATE_LIMIT_BACKOFF_SECONDS",
+      DEFAULT_RATE_LIMIT_BACKOFF_MS,
+    );
+  }
+
+  private getMaxSessionReplies(): number {
+    const value = this.readInlineEnvValue("MAX_SESSION_REPLIES");
+    if (typeof value !== "string") {
+      return DEFAULT_MAX_SESSION_REPLIES;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_MAX_SESSION_REPLIES;
+    }
+    return Math.floor(parsed);
+  }
+
+  private getReservedFinalReplies(): number {
+    const value = this.readInlineEnvValue("RESERVED_FINAL_REPLIES");
+    if (typeof value !== "string") {
+      return DEFAULT_RESERVED_FINAL_REPLIES;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return DEFAULT_RESERVED_FINAL_REPLIES;
+    }
+    return Math.floor(parsed);
+  }
+
+  private shouldUseReservedReply(bot: StoredBot, trigger: BotMessageInput): boolean {
+    const updates = this.collectCoordinationUpdates(trigger.botId, trigger.content);
+    if (bot.name === bot.coordinator) {
+      return updates.some(
+        (update) => update.type === "complete" || update.type === "report",
+      );
+    }
+    return updates.some((update) => update.type === "request");
+  }
+
+  private shouldCountReplyAgainstBudget(
+    bot: StoredBot,
+    trigger: BotMessageInput,
+    coordination: CoordinationUpdate[],
+    recipients: string[],
+  ): boolean {
+    if (bot.name !== bot.coordinator) {
+      return true;
+    }
+    if (coordination.some((update) => update.type === "claim" || update.type === "request")) {
+      return true;
+    }
+    if (recipients.length > 1) {
+      return true;
+    }
+    const incomingUpdates = this.collectCoordinationUpdates(
+      trigger.botId,
+      trigger.content,
+    );
+    if (incomingUpdates.length === 0) {
+      return true;
+    }
+    const onlyIncomingStatus = incomingUpdates.every(
+      (update) => update.type === "report" || update.type === "complete",
+    );
+    const onlyOutgoingStatus =
+      coordination.length > 0 &&
+      coordination.every(
+        (update) => update.type === "report" || update.type === "complete",
+      );
+    if (onlyIncomingStatus && (onlyOutgoingStatus || recipients.length <= 1)) {
+      return false;
+    }
+    return true;
+  }
+
+  private inferTargetBotName(
+    bot: StoredBot,
+    update: CoordinationUpdate,
+  ): string | undefined {
+    const peers = new Set(
+      (bot.knownBots ?? [])
+        .map((peer) => peer.name)
+        .filter((name) => name && name !== bot.name),
+    );
+    const owner = update.owner?.trim();
+    if (owner && peers.has(owner)) {
+      return owner;
+    }
+    const lowerSummary = update.summary.toLowerCase();
+    for (const peer of peers) {
+      if (lowerSummary.includes(peer.toLowerCase())) {
+        return peer;
+      }
+    }
+    const lowerTaskId = update.taskId.toLowerCase();
+    for (const peer of peers) {
+      if (lowerTaskId.includes(peer.toLowerCase())) {
+        return peer;
+      }
+    }
+    return undefined;
+  }
+
+  private buildOutboundFingerprint(
+    content: string,
+    coordination: CoordinationUpdate[],
+  ): string {
+    const normalizedMessage = this.stripCoordinationPayload(content)
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+    const normalizedCoordination = coordination
+      .map((update) =>
+        [
+          update.type,
+          update.taskId.trim().toLowerCase(),
+          (update.owner ?? "").trim().toLowerCase(),
+          update.summary.trim().toLowerCase().replace(/\s+/g, " "),
+        ].join("|"),
+      )
+      .sort()
+      .join("||");
+    return `${normalizedMessage}@@${normalizedCoordination}`;
+  }
+
+  private pruneRecentOutbound(
+    entries: OutboundFingerprint[] | undefined,
+  ): OutboundFingerprint[] {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return [];
+    }
+    const cutoff = Date.now() - OUTBOUND_DEDUPE_WINDOW_MS;
+    return entries.filter((entry) => {
+      const sentAtMs = Date.parse(entry.sentAt);
+      return Number.isFinite(sentAtMs) && sentAtMs >= cutoff;
+    });
+  }
+
+  private hasRecentOutboundFingerprint(
+    bot: StoredBot,
+    recipient: string,
+    fingerprint: string,
+  ): boolean {
+    return this.pruneRecentOutbound(bot.recentOutbound).some(
+      (entry) =>
+        entry.recipient === recipient && entry.fingerprint === fingerprint,
+    );
+  }
+
+  private async recordOutboundFingerprints(
+    bot: StoredBot,
+    entries: OutboundFingerprint[],
+  ): Promise<void> {
+    const updated: StoredBot = {
+      ...bot,
+      recentOutbound: this.pruneRecentOutbound([
+        ...(bot.recentOutbound ?? []),
+        ...entries,
+      ]),
+    };
+    await this.ctx.storage.put(BOT_STORAGE_KEY, updated);
+    this.bot = updated;
+  }
+
+  private readPositiveEnvMs(name: string, fallbackMs: number): number {
+    const value = this.readInlineEnvValue(name);
+    if (typeof value !== "string") {
+      return fallbackMs;
+    }
+    const seconds = Number(value.trim());
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return fallbackMs;
+    }
+    return seconds * 1000;
+  }
+
+  private isRateLimitError(error: unknown): boolean {
+    const message =
+      error instanceof Error ? error.message : String(error ?? "unknown error");
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes("rate limit") ||
+      normalized.includes("429") ||
+      normalized.includes("tpm") ||
+      normalized.includes("rpm")
     );
   }
 }

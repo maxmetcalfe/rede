@@ -6,9 +6,18 @@ import {
 	StoredBot,
 	jsonResponse,
 } from "./bot";
-import { clearEventLog, getEventLog, logEvent } from "./logger";
+import {
+	EventLogDurableObject,
+	clearDurableEventLog,
+	clearEventLog,
+	configureEventLogSink,
+	createDurableEventLogSink,
+	getDurableEventLog,
+	logEvent,
+	LogEntry,
+} from "./logger";
 
-export { BotDurableObject };
+export { BotDurableObject, EventLogDurableObject };
 
 function ensureBotDefinition(
 	name: string,
@@ -30,13 +39,23 @@ export default {
 		ctx: ExecutionContext,
 	): Promise<Response> {
 		const url = new URL(request.url);
+		configureEventLogSink(createDurableEventLogSink(env));
 		const [, root = "", maybeName = "", maybeAction = ""] = url.pathname
 			.split("/")
 			.map((segment) => segment.trim())
 			.map(decodeURIComponent);
 
 		const registry = new BotRegistry(env);
-		scheduleAutoDeployment(registry, env, url.origin, ctx);
+		if (
+			shouldScheduleAutoDeployment(
+				request,
+				root,
+				maybeName,
+				maybeAction,
+			)
+		) {
+			scheduleAutoDeployment(registry, env, url.origin, ctx);
+		}
 
 		if (!root || root.length === 0) {
 			return jsonResponse({
@@ -67,13 +86,14 @@ export default {
 				if (request.method !== "POST") {
 					return new Response("Method Not Allowed", { status: 405 });
 				}
+				await clearDurableEventLog(env);
 				clearEventLog();
 				return jsonResponse({ message: "Event log cleared." });
 			}
 			if (request.method !== "GET") {
 				return new Response("Method Not Allowed", { status: 405 });
 			}
-			const events = getEventLog();
+			const events = await getDurableEventLog(env);
 			if (maybeAction === "timeline") {
 				return renderTimeline(events);
 			}
@@ -100,6 +120,7 @@ export default {
 					await resetStub.resetState();
 				}),
 			);
+			await clearDurableEventLog(env);
 			clearEventLog();
 			autoDeployPromise = undefined;
 			return jsonResponse({
@@ -378,6 +399,27 @@ async function sendMessageBetweenBots(
 
 let autoDeployPromise: Promise<void> | undefined;
 
+function shouldScheduleAutoDeployment(
+	request: Request,
+	root: string,
+	maybeName: string,
+	maybeAction: string,
+): boolean {
+	if (request.method !== "GET") {
+		return false;
+	}
+	if (root !== "bots") {
+		return false;
+	}
+	if (!maybeName) {
+		return false;
+	}
+	if (maybeName === "events" || maybeName === "reset") {
+		return false;
+	}
+	return maybeAction.length === 0;
+}
+
 function scheduleAutoDeployment(
 	registry: BotRegistry,
 	env: Env,
@@ -416,7 +458,7 @@ async function autoDeployAllBots(
 	for (const bot of bots) {
 		const stub = env.BOTS.getByName(bot.name);
 		try {
-			await deployBot(stub, bot, registry, env, origin);
+			await ensureBotState(stub, bot, registry, env, origin);
 		} catch (error) {
 			failures.push(bot.name);
 			logEvent("deploy.auto.bot_error", {
@@ -471,7 +513,7 @@ function readEnvValue(
 		: undefined;
 }
 
-function renderTimeline(events: ReturnType<typeof getEventLog>): Response {
+function renderTimeline(events: LogEntry[]): Response {
 	const items =
 		events.length > 0
 			? events

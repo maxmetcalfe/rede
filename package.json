@@ -1,7 +1,8 @@
 {
   "name": "rede",
   "version": "0.0.0",
-  "private": true,
+  "description": "Cloudflare Workers + Durable Objects runtime for small networks of LLM-backed bots.",
+  "license": "MIT",
   "scripts": {
     "deploy": "wrangler deploy",
     "deploy:local": "wrangler dev --local --persist-to=.wrangler/local-state",
@@ -17,6 +18,9 @@
   "dependencies": {
     "@ai-sdk/openai": "2.0.74",
     "ai": "5.0.104"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "devDependencies": {
     "typescript": "^5.5.2",
