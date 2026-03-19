@@ -23,6 +23,7 @@ This is not a general workflow engine, job queue, or arbitrary graph runtime for
 - [`src/logger.ts`](./src/logger.ts): event logging and durable event log storage.
 - [`bots.json`](./bots.json): bot definitions.
 - [`game.json`](./game.json): optional scenario-mode configuration.
+- [`examples/story-circle/`](./examples/story-circle): reusable story-circle bot and scenario preset.
 - [`scripts/deploy-bots.mjs`](./scripts/deploy-bots.mjs): deploy selected bots and verify healthchecks.
 - [`scripts/kill-bots.mjs`](./scripts/kill-bots.mjs): destroy and recreate the bot Durable Object namespace.
 - [`scripts/archive-timeline.mjs`](./scripts/archive-timeline.mjs): save the event stream and HTML timeline for a run.
@@ -139,6 +140,15 @@ The worker exposes a recent event stream as NDJSON and an HTML timeline. Events 
 [`game.json`](./game.json) enables an optional scenario/evaluation mode. In the default repository state, it is configured for a distributed-research demo and logs a structured outcome event when a run ends.
 
 If you do not want this behavior, disable or replace the contents of [`game.json`](./game.json).
+
+## Example Presets
+
+The repository includes a reusable story-circle preset in [`examples/story-circle/`](./examples/story-circle).
+
+- [`examples/story-circle/bots.json`](./examples/story-circle/bots.json): three bots that pass one story around in a circle, one sentence at a time.
+- [`examples/story-circle/game.json`](./examples/story-circle/game.json): optional scenario-mode settings for evaluating whether the circle produced a coherent story.
+
+The active root [`bots.json`](./bots.json) and [`game.json`](./game.json) currently match that story-circle configuration.
 
 ## Getting Started
 
