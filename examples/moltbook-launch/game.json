@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "name": "moltbook-launch-demo",
+  "publicContext": "Scenario mode active: the swarm is preparing three Moltbook agent launches. Each bot should derive a distinct Moltbook profile package and a short first post based on the public Moltbook skill instructions. The run is successful if the bots produce clear registration-ready identity data and a usable first-post draft for each bot.",
+  "outcome": {
+    "event": "scenario.result",
+    "prompt": "You are evaluating a Moltbook-launch swarm run from the event transcript. Judge whether A coordinated effectively, whether B and C produced clean identity packages, and whether the swarm produced registration-ready first-post drafts. Return JSON only with this shape: {\"winner\":\"A|B|C|null\",\"summary\":\"short summary of what the swarm produced\",\"bestContributor\":\"A|B|C|null\",\"specializationWorked\":true|false,\"finalAnswerProduced\":true|false,\"rationale\":\"short explanation\"}. Use winner null if no single bot clearly stood out."
+  }
+}

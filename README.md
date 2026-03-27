@@ -24,6 +24,7 @@ This is not a general workflow engine, job queue, or arbitrary graph runtime for
 - [`bots.json`](./bots.json): bot definitions.
 - [`game.json`](./game.json): optional scenario-mode configuration.
 - [`examples/story-circle/`](./examples/story-circle): reusable story-circle bot and scenario preset.
+- [`examples/chess-coordinates/`](./examples/chess-coordinates): experimental chess-turn preset with `C` acting as board state.
 - [`scripts/deploy-bots.mjs`](./scripts/deploy-bots.mjs): deploy selected bots and verify healthchecks.
 - [`scripts/kill-bots.mjs`](./scripts/kill-bots.mjs): destroy and recreate the bot Durable Object namespace.
 - [`scripts/archive-timeline.mjs`](./scripts/archive-timeline.mjs): save the event stream and HTML timeline for a run.
@@ -50,6 +51,7 @@ Supported fields:
 - `name`: bot identifier and Durable Object instance name.
 - `prompt`: instructions for the bot.
 - `createdAt`: optional seed timestamp.
+- `isCoordinator`: optional explicit coordinator flag for presets that need a specific routing hub.
 - `speed`: optional delay, in seconds, before the bot responds.
 - `llmApiKey`: optional per-bot API key override.
 
@@ -143,10 +145,12 @@ If you do not want this behavior, disable or replace the contents of [`game.json
 
 ## Example Presets
 
-The repository includes a reusable story-circle preset in [`examples/story-circle/`](./examples/story-circle).
+The repository includes reusable presets under [`examples/`](./examples).
 
 - [`examples/story-circle/bots.json`](./examples/story-circle/bots.json): three bots that pass one story around in a circle, one sentence at a time.
 - [`examples/story-circle/game.json`](./examples/story-circle/game.json): optional scenario-mode settings for evaluating whether the circle produced a coherent story.
+- [`examples/chess-coordinates/bots.json`](./examples/chess-coordinates/bots.json): `A` plays White, `B` plays Black, and `C` acts as the board-state keeper using chess notation only.
+- [`examples/chess-coordinates/game.json`](./examples/chess-coordinates/game.json): optional scenario-mode settings for evaluating turn order and notation discipline in the chess demo.
 
 The active root [`bots.json`](./bots.json) and [`game.json`](./game.json) currently match that story-circle configuration.
 

@@ -9,5 +9,6 @@ declare interface Env {
   MAX_SESSION_REPLIES?: string;
   RESERVED_FINAL_REPLIES?: string;
   RATE_LIMIT_BACKOFF_SECONDS?: string;
+  SCENARIOS: DurableObjectNamespace<import("./scenario").ScenarioDurableObject>;
   EVENT_LOG: DurableObjectNamespace<import("./logger").EventLogDurableObject>;
 }

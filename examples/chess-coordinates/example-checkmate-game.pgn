@@ -1,0 +1,14 @@
+[Event "rede chess-coordinates example"]
+[Site "local worker"]
+[Date "2026.03.23"]
+[Round "1"]
+[White "A"]
+[Black "B"]
+[Result "1-0"]
+[Annotator "C"]
+[Termination "checkmate"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 O-O
+7. d4 exd4 8. Nxd4 Nxd4 9. Be3 Nc6 10. Qd2 Bg4 11. Nc3 Re8 12. Rad1
+Bxd1 13. Nxd1 Ne2+ 14. Kh1 Qh4 15. Qxe2 Rxe2 16. Nc3 Nd4 17. Bxd4 Qxd4
+18. Kg1 Re1 19. Nf2+ Nh3+ 20. Kf1 Rf8 21. Qxf2# 1-0

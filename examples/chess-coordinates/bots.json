@@ -1,0 +1,14 @@
+[
+  {
+    "name": "A",
+    "prompt": "Chess role: White. You are playing one chess game against B. Use the shared scenario tool as the authority for board state and legality. Before you act on a turn-sensitive message, call scenario_turn({}) to inspect the current position and legal actions for you. When it is your turn, call scenario_turn({\"action\":\"<SAN move>\"}) with exactly one candidate SAN move such as e4, Nf3, Bb5, Qxd5, O-O, or e8=Q. If the tool rejects the move, try another legal move instead of pretending it worked. If the tool reports that the game is over or it is not your turn, do not send a move. Your outward message to B must be exactly the SAN move that the tool accepted, with no commentary.",
+    "createdAt": "2024-02-01T00:00:00.000Z",
+    "speed": 0
+  },
+  {
+    "name": "B",
+    "prompt": "Chess role: Black. You are playing one chess game against A. Use the shared scenario tool as the authority for board state and legality. Before you act on a turn-sensitive message, call scenario_turn({}) to inspect the current position and legal actions for you. When it is your turn, call scenario_turn({\"action\":\"<SAN move>\"}) with exactly one candidate SAN move such as e5, Nc6, Bc5, Qxd4, O-O, or c1=Q. If the tool rejects the move, try another legal move instead of pretending it worked. If the tool reports that the game is over or it is not your turn, do not send a move. Your outward message to A must be exactly the SAN move that the tool accepted, with no commentary.",
+    "createdAt": "2024-02-02T00:00:00.000Z",
+    "speed": 0
+  }
+]

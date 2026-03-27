@@ -15,6 +15,12 @@
       "new_sqlite_classes": [
         "EventLogDurableObject"
       ]
+    },
+    {
+      "tag": "scenario-v1",
+      "new_sqlite_classes": [
+        "ScenarioDurableObject"
+      ]
     }
   ],
   "durable_objects": {
@@ -26,6 +32,10 @@
       {
         "class_name": "EventLogDurableObject",
         "name": "EVENT_LOG"
+      },
+      {
+        "class_name": "ScenarioDurableObject",
+        "name": "SCENARIOS"
       }
     ]
   },

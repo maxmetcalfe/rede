@@ -16,8 +16,12 @@ import {
 	logEvent,
 	LogEntry,
 } from "./logger";
+import {
+	ScenarioDurableObject,
+	getScenarioName,
+} from "./scenario";
 
-export { BotDurableObject, EventLogDurableObject };
+export { BotDurableObject, EventLogDurableObject, ScenarioDurableObject };
 
 function ensureBotDefinition(
 	name: string,
@@ -120,6 +124,7 @@ export default {
 					await resetStub.resetState();
 				}),
 			);
+			await env.SCENARIOS.getByName(getScenarioName(env)).resetState();
 			await clearDurableEventLog(env);
 			clearEventLog();
 			autoDeployPromise = undefined;
@@ -274,6 +279,7 @@ function buildDeploymentPayload(
 		name: bot.name,
 		botUrl: new URL(`/bots/${encodeURIComponent(bot.name)}`, origin).toString(),
 		prompt: bot.prompt,
+		isCoordinator: bot.isCoordinator,
 	}));
 	return {
 		bot: targetBot,
@@ -411,13 +417,10 @@ function shouldScheduleAutoDeployment(
 	if (root !== "bots") {
 		return false;
 	}
-	if (!maybeName) {
+	if (maybeName || maybeAction) {
 		return false;
 	}
-	if (maybeName === "events" || maybeName === "reset") {
-		return false;
-	}
-	return maybeAction.length === 0;
+	return true;
 }
 
 function scheduleAutoDeployment(
